@@ -1,0 +1,10 @@
+// Check this example freely; run it only against a trusted plaintext HTTP endpoint.
+include vela.std.http as http;
+include vela.concurrent as concurrent;
+
+async fn main() -> Int {
+    let cancellation = concurrent.create();
+    let response = await http.get("127.0.0.1", 8080, "/health", cancellation);
+    print(response);
+    return 0;
+}

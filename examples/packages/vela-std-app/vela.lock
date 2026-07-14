@@ -1,0 +1,40 @@
+{
+  "LockVersion": 1,
+  "Packages": [
+    {
+      "Name": "vela.std.cli",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.cli",
+      "ManifestHash": "e214f1f721d90d9aba2219265f9af233a21ee3e25786a6b221269a12fd7b304e"
+    },
+    {
+      "Name": "vela.std.config",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.config",
+      "ManifestHash": "cd391a40ea5305ce062c6ffd10185810597bfa6c3f622d288db23f7414446f01"
+    },
+    {
+      "Name": "vela.std.log",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.log",
+      "ManifestHash": "197dfc251f14c2b210e5746e82decc0d55242926442752f483462ec0cb025145"
+    },
+    {
+      "Name": "vela.std.sample",
+      "Version": "0.1.0",
+      "Kind": "application",
+      "Path": ".",
+      "ManifestHash": "297c3e6f83437a9fc9786afae1d16ad3e4066f73ef1da9fcd958506929743c6b"
+    },
+    {
+      "Name": "vela.std.test",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.test",
+      "ManifestHash": "647dfd1c0435b34a891b91877b4cad486da78d5e56ba48072eac9a05db123335"
+    }
+  ]
+}

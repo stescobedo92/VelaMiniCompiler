@@ -56,3 +56,30 @@ public sealed class VelaIoException(string message, string? sourceLocation = nul
 /// <summary>Thrown when an explicit Vela network operation fails.</summary>
 public sealed class VelaNetworkException(string message, string? sourceLocation = null, Exception? innerException = null)
     : VelaRuntimeException(message, sourceLocation, innerException);
+
+/// <summary>Thrown when a Vela operation observes explicitly requested cancellation.</summary>
+public sealed class VelaCancellationException(string? sourceLocation = null, Exception? innerException = null)
+    : VelaRuntimeException("The operation was cancelled.", sourceLocation, innerException);
+
+/// <summary>Thrown when deferred cleanup fails while another failure is already propagating.</summary>
+public sealed class VelaCleanupException : VelaRuntimeException
+{
+    /// <summary>Initializes a failure that preserves both primary and cleanup exceptions.</summary>
+    public VelaCleanupException(Exception primaryException, IReadOnlyList<Exception> cleanupExceptions)
+        : base(
+            "Deferred cleanup failed while another operation was failing.",
+            (primaryException as VelaRuntimeException)?.SourceLocation,
+            primaryException)
+    {
+        ArgumentNullException.ThrowIfNull(primaryException);
+        ArgumentNullException.ThrowIfNull(cleanupExceptions);
+        PrimaryException = primaryException;
+        CleanupExceptions = cleanupExceptions;
+    }
+
+    /// <summary>Gets the original exception that was propagating before cleanup.</summary>
+    public Exception PrimaryException { get; }
+
+    /// <summary>Gets every cleanup exception in reverse deferred registration order.</summary>
+    public IReadOnlyList<Exception> CleanupExceptions { get; }
+}

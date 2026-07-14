@@ -11,6 +11,7 @@ public sealed class VelaLexer
     private readonly SourceText _source;
     private readonly DiagnosticBag _diagnostics = new();
     private readonly List<SyntaxToken> _tokens = [];
+    private readonly List<SyntaxTrivia> _trivia = [];
     private int _position;
     private bool _atLineStart = true;
 
@@ -49,7 +50,7 @@ public sealed class VelaLexer
 
             if (StartsComment())
             {
-                SkipComment();
+                SkipComment(start);
                 continue;
             }
 
@@ -75,7 +76,7 @@ public sealed class VelaLexer
         }
 
         _tokens.Add(new SyntaxToken(TokenKind.EndOfFile, new TextSpan(_position, 0), string.Empty));
-        return new LexResult(_tokens, _diagnostics.Items.ToArray());
+        return new LexResult(_tokens, _diagnostics.Items.ToArray(), _trivia.ToArray());
     }
 
     private char Current => _source[_position];
@@ -107,21 +108,68 @@ public sealed class VelaLexer
         _atLineStart = true;
     }
 
-    private void SkipComment()
+    private void SkipComment(int start)
     {
+        if (Current == '#')
+        {
+            _position++;
+            while (_position < _source.Length && !IsLineBreakStart(Current))
+            {
+                _position++;
+            }
+
+            _trivia.Add(new SyntaxTrivia(SyntaxTriviaKind.LineComment, TextSpan.FromBounds(start, _position), _source.Text[start.._position]));
+            return;
+        }
+
         if (Current == '/' && Peek(1) == '/')
         {
+            var isDocumentation = Peek(2) == '/';
             _position += 2;
+            while (_position < _source.Length && !IsLineBreakStart(Current))
+            {
+                _position++;
+            }
+
+            _trivia.Add(new SyntaxTrivia(
+                isDocumentation ? SyntaxTriviaKind.DocumentationLineComment : SyntaxTriviaKind.LineComment,
+                TextSpan.FromBounds(start, _position),
+                _source.Text[start.._position]));
+            return;
         }
-        else
+
+        var documentationBlock = Peek(2) == '*';
+        _position += 2;
+        var depth = 1;
+        while (_position < _source.Length && depth > 0)
         {
+            if (Current == '/' && Peek(1) == '*')
+            {
+                depth++;
+                _position += 2;
+                continue;
+            }
+
+            if (Current == '*' && Peek(1) == '/')
+            {
+                depth--;
+                _position += 2;
+                continue;
+            }
+
             _position++;
         }
 
-        while (_position < _source.Length && !IsLineBreakStart(Current))
+        var span = TextSpan.FromBounds(start, _position);
+        if (depth != 0)
         {
-            _position++;
+            _diagnostics.ReportError("L009", span, "Unterminated block comment.", "Close the comment with '*/'.");
         }
+
+        _trivia.Add(new SyntaxTrivia(
+            documentationBlock ? SyntaxTriviaKind.DocumentationBlockComment : SyntaxTriviaKind.BlockComment,
+            span,
+            _source.Text[start.._position]));
     }
 
     private void ScanIdentifierOrKeyword(int start)
@@ -137,8 +185,11 @@ public sealed class VelaLexer
         {
             "let" => TokenKind.LetKeyword,
             "var" => TokenKind.VarKeyword,
+            "async" => TokenKind.AsyncKeyword,
+            "await" => TokenKind.AwaitKeyword,
             "fn" => TokenKind.FnKeyword,
             "record" => TokenKind.RecordKeyword,
+            "enum" => TokenKind.EnumKeyword,
             "include" => TokenKind.IncludeKeyword,
             "public" => TokenKind.PublicKeyword,
             "ffi" => TokenKind.FfiKeyword,
@@ -149,6 +200,10 @@ public sealed class VelaLexer
             "as" => TokenKind.AsKeyword,
             "return" => TokenKind.ReturnKeyword,
             "assert" => TokenKind.AssertKeyword,
+            "defer" => TokenKind.DeferKeyword,
+            "try" => TokenKind.TryKeyword,
+            "catch" => TokenKind.CatchKeyword,
+            "finally" => TokenKind.FinallyKeyword,
             "if" => TokenKind.IfKeyword,
             "else" => TokenKind.ElseKeyword,
             "for" => TokenKind.ForKeyword,
@@ -318,7 +373,8 @@ public sealed class VelaLexer
         _tokens.Add(new SyntaxToken(kind, span, text));
     }
 
-    private bool StartsComment() => Current == '#' || (Current == '/' && Peek(1) == '/');
+    private bool StartsComment() => Current == '#'
+        || (Current == '/' && Peek(1) is '/' or '*');
 
     private static bool IsLineBreakStart(char character) => character is '\r' or '\n';
 }

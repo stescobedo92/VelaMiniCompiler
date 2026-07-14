@@ -39,6 +39,14 @@ public sealed record UnaryExpressionSyntax(
     public override TextSpan Span => TextSpan.FromBounds(OperatorToken.Span.Start, Operand.Span.End);
 }
 
+/// <summary>Waits asynchronously for a Vela future within an async function.</summary>
+public sealed record AwaitExpressionSyntax(
+    SyntaxToken AwaitKeyword,
+    ExpressionSyntax Expression) : ExpressionSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(AwaitKeyword.Span.Start, Expression.Span.End);
+}
+
 public sealed record BinaryExpressionSyntax(
     ExpressionSyntax Left,
     SyntaxToken OperatorToken,

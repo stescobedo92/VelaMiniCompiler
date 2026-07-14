@@ -8,15 +8,20 @@ namespace Vela.Core.Parsing;
 /// <summary>Builds a syntax tree from Vela tokens while recovering from independent errors.</summary>
 public sealed class VelaParser
 {
+    private readonly SourceText _source;
     private readonly IReadOnlyList<SyntaxToken> _tokens;
+    private readonly IReadOnlyList<SyntaxTrivia> _trivia;
     private readonly DiagnosticBag _diagnostics = new();
+    private readonly HashSet<int> _usedDocumentation = [];
     private int _position;
 
     public VelaParser(SourceText source)
     {
         ArgumentNullException.ThrowIfNull(source);
+        _source = source;
         var lexResult = new VelaLexer(source).Lex();
         _tokens = lexResult.Tokens;
+        _trivia = lexResult.Trivia;
         _diagnostics.AddRange(lexResult.Diagnostics);
     }
 
@@ -34,24 +39,30 @@ public sealed class VelaParser
                 break;
             }
 
-            members.Add(ParseStatement());
+            var documentation = FindDocumentation(Current.Span.Start);
+            members.Add(ParseStatement(documentation));
         }
 
         var endOfFile = Match(TokenKind.EndOfFile);
+        ReportOrphanDocumentation();
         return new ParseResult(new CompilationUnitSyntax(members, endOfFile), _diagnostics.Items.ToArray());
     }
 
-    private StatementSyntax ParseStatement() => Current.Kind switch
+    private StatementSyntax ParseStatement(DocumentationCommentSyntax? documentation = null) => Current.Kind switch
     {
         TokenKind.IncludeKeyword => ParseIncludeDirective(),
-        TokenKind.PublicKeyword => ParsePublicDeclaration(),
+        TokenKind.PublicKeyword => ParsePublicDeclaration(documentation),
         TokenKind.LetKeyword => ParseLetStatement(),
         TokenKind.VarKeyword => ParseVarStatement(),
-        TokenKind.FnKeyword => ParseFunctionDeclaration(),
-        TokenKind.RecordKeyword => ParseRecordDeclaration(),
-        TokenKind.ClassKeyword or TokenKind.StructKeyword or TokenKind.InterfaceKeyword => ParseObjectDeclaration(null),
+        TokenKind.AsyncKeyword => ParseAsyncFunctionDeclaration(documentation: documentation),
+        TokenKind.FnKeyword => ParseFunctionDeclaration(documentation: documentation),
+        TokenKind.RecordKeyword => ParseRecordDeclaration(documentation),
+        TokenKind.EnumKeyword => ParseEnumDeclaration(null, documentation),
+        TokenKind.ClassKeyword or TokenKind.StructKeyword or TokenKind.InterfaceKeyword => ParseObjectDeclaration(null, documentation),
         TokenKind.ReturnKeyword => ParseReturnStatement(),
         TokenKind.AssertKeyword => ParseAssertStatement(),
+        TokenKind.DeferKeyword => ParseDeferStatement(),
+        TokenKind.TryKeyword => ParseTryStatement(),
         TokenKind.IfKeyword => ParseIfStatement(),
         TokenKind.ForKeyword => ParseForStatement(),
         TokenKind.WhileKeyword => ParseWhileStatement(),
@@ -61,25 +72,31 @@ public sealed class VelaParser
         _ => ParseExpressionStatement()
     };
 
-    private StatementSyntax ParsePublicDeclaration()
+    private StatementSyntax ParsePublicDeclaration(DocumentationCommentSyntax? documentation)
     {
         var publicKeyword = Match(TokenKind.PublicKeyword);
-        if (Current.Kind == TokenKind.FfiKeyword || Current.Kind == TokenKind.FnKeyword)
+        if (Current.Kind is TokenKind.FfiKeyword or TokenKind.AsyncKeyword or TokenKind.FnKeyword)
         {
             var ffiKeyword = Current.Kind == TokenKind.FfiKeyword ? NextToken() : null;
-            return ParseFunctionDeclaration(publicKeyword, ffiKeyword);
+            var asyncKeyword = Current.Kind == TokenKind.AsyncKeyword ? NextToken() : null;
+            return ParseFunctionDeclaration(publicKeyword, ffiKeyword, asyncKeyword, documentation);
         }
 
         if (Current.Kind is TokenKind.ClassKeyword or TokenKind.StructKeyword or TokenKind.InterfaceKeyword)
         {
-            return ParseObjectDeclaration(publicKeyword);
+            return ParseObjectDeclaration(publicKeyword, documentation);
+        }
+
+        if (Current.Kind == TokenKind.EnumKeyword)
+        {
+            return ParseEnumDeclaration(publicKeyword, documentation);
         }
 
         _diagnostics.ReportError(
             "P007",
             Current.Span,
-            "The 'public' modifier must declare a function, class, struct, or interface.",
-            "Use 'public fn', 'public ffi fn', 'public class', 'public struct', or 'public interface'.");
+            "The 'public' modifier must declare a function, class, struct, interface, or enum.",
+            "Use 'public fn', 'public async fn', 'public ffi fn', 'public class', 'public struct', 'public interface', or 'public enum'.");
         SynchronizeToStatementBoundary();
         return new ExpressionStatementSyntax(new LiteralExpressionSyntax(SyntaxToken.Missing(TokenKind.Identifier, publicKeyword.Span.End)));
     }
@@ -129,7 +146,11 @@ public sealed class VelaParser
         return new VarStatementSyntax(keyword, identifier, colon, type, equals, initializer);
     }
 
-    private FunctionDeclarationSyntax ParseFunctionDeclaration(SyntaxToken? publicKeyword = null, SyntaxToken? ffiKeyword = null)
+    private FunctionDeclarationSyntax ParseFunctionDeclaration(
+        SyntaxToken? publicKeyword = null,
+        SyntaxToken? ffiKeyword = null,
+        SyntaxToken? asyncKeyword = null,
+        DocumentationCommentSyntax? documentation = null)
     {
         var keyword = Match(TokenKind.FnKeyword);
         var identifier = Match(TokenKind.Identifier);
@@ -146,9 +167,10 @@ public sealed class VelaParser
         }
 
         var body = ParseBlock();
-        return new FunctionDeclarationSyntax(
+        var function = new FunctionDeclarationSyntax(
             publicKeyword,
             ffiKeyword,
+            asyncKeyword,
             keyword,
             identifier,
             genericParameters,
@@ -158,10 +180,28 @@ public sealed class VelaParser
             arrow,
             returnType,
             body.LeftBrace,
-            body);
+            body,
+            documentation);
+        UseDocumentation(documentation);
+        ValidateFunctionDocumentation(function);
+        return function;
     }
 
-    private ObjectDeclarationSyntax ParseObjectDeclaration(SyntaxToken? publicKeyword)
+    private FunctionDeclarationSyntax ParseAsyncFunctionDeclaration(
+        SyntaxToken? publicKeyword = null,
+        SyntaxToken? ffiKeyword = null,
+        DocumentationCommentSyntax? documentation = null)
+    {
+        var asyncKeyword = Match(TokenKind.AsyncKeyword);
+        if (Current.Kind != TokenKind.FnKeyword)
+        {
+            _diagnostics.ReportError("P011", Current.Span, "The 'async' modifier must precede a function declaration.", "Use syntax such as 'async fn fetch() -> Text { ... }'.");
+        }
+
+        return ParseFunctionDeclaration(publicKeyword, ffiKeyword, asyncKeyword, documentation);
+    }
+
+    private ObjectDeclarationSyntax ParseObjectDeclaration(SyntaxToken? publicKeyword, DocumentationCommentSyntax? documentation)
     {
         var keyword = NextToken();
         var kind = keyword.Kind switch
@@ -202,11 +242,12 @@ public sealed class VelaParser
                 break;
             }
 
-            members.Add(kind == ObjectDeclarationKind.Interface ? ParseInterfaceMember() : ParseObjectMember());
+            var memberDocumentation = FindDocumentation(Current.Span.Start);
+            members.Add(kind == ObjectDeclarationKind.Interface ? ParseInterfaceMember(memberDocumentation) : ParseObjectMember(memberDocumentation));
         }
 
         var rightBrace = Match(TokenKind.RightBrace);
-        return new ObjectDeclarationSyntax(
+        var declaration = new ObjectDeclarationSyntax(
             publicKeyword,
             keyword,
             kind,
@@ -216,14 +257,19 @@ public sealed class VelaParser
             implementedInterfaces,
             leftBrace,
             members,
-            rightBrace);
+            rightBrace,
+            documentation);
+        UseDocumentation(documentation);
+        return declaration;
     }
 
-    private ObjectMemberSyntax ParseObjectMember()
+    private ObjectMemberSyntax ParseObjectMember(DocumentationCommentSyntax? documentation)
     {
-        if (Current.Kind == TokenKind.FnKeyword)
+        if (Current.Kind is TokenKind.FnKeyword or TokenKind.AsyncKeyword)
         {
-            return new ObjectMethodSyntax(ParseFunctionDeclaration());
+            return new ObjectMethodSyntax(Current.Kind == TokenKind.AsyncKeyword
+                ? ParseAsyncFunctionDeclaration(documentation: documentation)
+                : ParseFunctionDeclaration(documentation: documentation));
         }
 
         var varKeyword = Current.Kind == TokenKind.VarKeyword ? NextToken() : null;
@@ -231,11 +277,13 @@ public sealed class VelaParser
         var colon = Match(TokenKind.Colon);
         var type = ParseType();
         ConsumeStatementTerminator();
-        return new ObjectFieldSyntax(varKeyword, identifier, colon, type);
+        UseDocumentation(documentation);
+        return new ObjectFieldSyntax(varKeyword, identifier, colon, type, documentation);
     }
 
-    private InterfaceMethodSyntax ParseInterfaceMember()
+    private InterfaceMethodSyntax ParseInterfaceMember(DocumentationCommentSyntax? documentation)
     {
+        var asyncKeyword = Current.Kind == TokenKind.AsyncKeyword ? NextToken() : null;
         var fn = Match(TokenKind.FnKeyword);
         var identifier = Match(TokenKind.Identifier);
         var genericParameters = ParseOptionalGenericParameters();
@@ -251,10 +299,13 @@ public sealed class VelaParser
         }
 
         ConsumeStatementTerminator();
-        return new InterfaceMethodSyntax(fn, identifier, genericParameters, left, parameters, right, arrow, returnType);
+        var method = new InterfaceMethodSyntax(asyncKeyword, fn, identifier, genericParameters, left, parameters, right, arrow, returnType, documentation);
+        UseDocumentation(documentation);
+        ValidateDocumentationParameters(documentation, parameters, returnType);
+        return method;
     }
 
-    private RecordDeclarationSyntax ParseRecordDeclaration()
+    private RecordDeclarationSyntax ParseRecordDeclaration(DocumentationCommentSyntax? documentation)
     {
         var keyword = Match(TokenKind.RecordKeyword);
         var identifier = Match(TokenKind.Identifier);
@@ -271,18 +322,19 @@ public sealed class VelaParser
                 break;
             }
 
-            members.Add(ParseRecordMember());
+            members.Add(ParseRecordMember(FindDocumentation(Current.Span.Start)));
         }
 
         var rightBrace = Match(TokenKind.RightBrace);
-        return new RecordDeclarationSyntax(keyword, identifier, genericParameters, leftBrace, members, rightBrace);
+        UseDocumentation(documentation);
+        return new RecordDeclarationSyntax(keyword, identifier, genericParameters, leftBrace, members, rightBrace, documentation);
     }
 
-    private RecordMemberSyntax ParseRecordMember()
+    private RecordMemberSyntax ParseRecordMember(DocumentationCommentSyntax? documentation)
     {
         if (Current.Kind == TokenKind.FnKeyword)
         {
-            return new RecordMethodSyntax(ParseFunctionDeclaration());
+            return new RecordMethodSyntax(ParseFunctionDeclaration(documentation: documentation));
         }
 
         if (Current.Kind != TokenKind.Identifier)
@@ -294,14 +346,64 @@ public sealed class VelaParser
                 "Declare a field as 'name: Type' or begin a method with 'fn'.");
             SynchronizeToStatementBoundary();
             var missing = SyntaxToken.Missing(TokenKind.Identifier, Current.Span.Start);
-            return new RecordFieldSyntax(missing, SyntaxToken.Missing(TokenKind.Colon, Current.Span.Start), new NamedTypeSyntax(missing, null, [], null, null));
+            return new RecordFieldSyntax(missing, SyntaxToken.Missing(TokenKind.Colon, Current.Span.Start), new NamedTypeSyntax(missing, null, [], null, null), documentation);
         }
 
         var identifier = Match(TokenKind.Identifier);
         var colon = Match(TokenKind.Colon);
         var type = ParseType();
         ConsumeStatementTerminator();
-        return new RecordFieldSyntax(identifier, colon, type);
+        UseDocumentation(documentation);
+        return new RecordFieldSyntax(identifier, colon, type, documentation);
+    }
+
+    private EnumDeclarationSyntax ParseEnumDeclaration(SyntaxToken? publicKeyword, DocumentationCommentSyntax? documentation)
+    {
+        var enumKeyword = Match(TokenKind.EnumKeyword);
+        var identifier = Match(TokenKind.Identifier);
+        var leftBrace = Match(TokenKind.LeftBrace);
+        SkipNewLines();
+        var members = new List<EnumMemberSyntax>();
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        while (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile)
+        {
+            SkipNewLines();
+            if (Current.Kind is TokenKind.RightBrace or TokenKind.EndOfFile)
+            {
+                break;
+            }
+
+            var memberDocumentation = FindDocumentation(Current.Span.Start);
+            var member = Match(TokenKind.Identifier);
+            if (!names.Add(member.Text))
+            {
+                _diagnostics.ReportError("P009", member.Span, $"Duplicate enum member '{member.Text}'.", "Use a unique name for each enum member.");
+            }
+
+            SyntaxToken? separator = null;
+            if (Current.Kind is TokenKind.Comma or TokenKind.Semicolon)
+            {
+                separator = NextToken();
+                SkipNewLines();
+            }
+            else if (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile and not TokenKind.NewLine)
+            {
+                _diagnostics.ReportError("P009", Current.Span, "Expected ',' or ';' after an enum member.", "Separate enum members with ',' or ';'.");
+                SynchronizeToStatementBoundary();
+            }
+
+            UseDocumentation(memberDocumentation);
+            members.Add(new EnumMemberSyntax(member, separator, memberDocumentation));
+        }
+
+        var rightBrace = Match(TokenKind.RightBrace);
+        if (members.Count == 0)
+        {
+            _diagnostics.ReportError("P009", identifier.Span, "An enum must declare at least one member.", "Add one or more named enum members.");
+        }
+
+        UseDocumentation(documentation);
+        return new EnumDeclarationSyntax(publicKeyword, enumKeyword, identifier, leftBrace, members, rightBrace, documentation);
     }
 
     private ReturnStatementSyntax ParseReturnStatement()
@@ -331,6 +433,50 @@ public sealed class VelaParser
 
         ConsumeStatementTerminator();
         return new AssertStatementSyntax(keyword, condition, comma, message);
+    }
+
+    private DeferStatementSyntax ParseDeferStatement()
+    {
+        var keyword = Match(TokenKind.DeferKeyword);
+        var invocation = ParseExpression();
+        if (invocation is not CallExpressionSyntax)
+        {
+            _diagnostics.ReportError("P010", invocation.Span, "A defer statement requires a call expression.", "Use syntax such as 'defer tcp.close(connection);'.");
+        }
+
+        ConsumeStatementTerminator();
+        return new DeferStatementSyntax(keyword, invocation);
+    }
+
+    private TryStatementSyntax ParseTryStatement()
+    {
+        var tryKeyword = Match(TokenKind.TryKeyword);
+        var tryBlock = ParseBlock();
+        SkipNewLines();
+        var catches = new List<CatchClauseSyntax>();
+        while (Current.Kind == TokenKind.CatchKeyword)
+        {
+            var catchKeyword = NextToken();
+            var exceptionType = ParseType();
+            var identifier = Match(TokenKind.Identifier);
+            var block = ParseBlock();
+            catches.Add(new CatchClauseSyntax(catchKeyword, exceptionType, identifier, block));
+            SkipNewLines();
+        }
+
+        FinallyClauseSyntax? finallyClause = null;
+        if (Current.Kind == TokenKind.FinallyKeyword)
+        {
+            var finallyKeyword = NextToken();
+            finallyClause = new FinallyClauseSyntax(finallyKeyword, ParseBlock());
+        }
+
+        if (catches.Count == 0 && finallyClause is null)
+        {
+            _diagnostics.ReportError("P010", tryKeyword.Span, "A try statement requires at least one catch or finally block.", "Add 'catch VelaRuntimeException error { ... }' or 'finally { ... }'.");
+        }
+
+        return new TryStatementSyntax(tryKeyword, tryBlock, catches, finallyClause);
     }
 
     private IfStatementSyntax ParseIfStatement()
@@ -450,7 +596,7 @@ public sealed class VelaParser
                 break;
             }
 
-            statements.Add(ParseStatement());
+            statements.Add(ParseStatement(FindDocumentation(Current.Span.Start)));
         }
 
         var rightBrace = Match(TokenKind.RightBrace);
@@ -593,7 +739,12 @@ public sealed class VelaParser
     {
         ExpressionSyntax left;
         var unaryPrecedence = GetUnaryPrecedence(Current.Kind);
-        if (unaryPrecedence != 0)
+        if (Current.Kind == TokenKind.AwaitKeyword)
+        {
+            var awaitKeyword = NextToken();
+            left = new AwaitExpressionSyntax(awaitKeyword, ParseBinaryExpression(7));
+        }
+        else if (unaryPrecedence != 0)
         {
             var operatorToken = NextToken();
             var operand = ParseBinaryExpression(unaryPrecedence);
@@ -815,6 +966,102 @@ public sealed class VelaParser
         }
 
         SkipNewLines();
+    }
+
+    private DocumentationCommentSyntax? FindDocumentation(int declarationStart)
+    {
+        var candidates = _trivia
+            .Where(trivia => trivia.IsDocumentation && trivia.Span.End <= declarationStart)
+            .OrderBy(trivia => trivia.Span.Start)
+            .ToArray();
+        if (candidates.Length == 0)
+        {
+            return null;
+        }
+
+        var last = candidates[^1];
+        if (!ContainsOnlyWhitespace(last.Span.End, declarationStart))
+        {
+            return null;
+        }
+
+        var comments = new List<SyntaxTrivia> { last };
+        var groupStart = last.Span.Start;
+        for (var index = candidates.Length - 2; index >= 0; index--)
+        {
+            var candidate = candidates[index];
+            if (!ContainsOnlyWhitespace(candidate.Span.End, groupStart))
+            {
+                break;
+            }
+
+            comments.Add(candidate);
+            groupStart = candidate.Span.Start;
+        }
+
+        comments.Reverse();
+        return new DocumentationCommentSyntax(comments);
+    }
+
+    private bool ContainsOnlyWhitespace(int start, int end) => _source.Text[start..end].All(char.IsWhiteSpace);
+
+    private void UseDocumentation(DocumentationCommentSyntax? documentation)
+    {
+        if (documentation is null)
+        {
+            return;
+        }
+
+        foreach (var comment in documentation.Comments)
+        {
+            _usedDocumentation.Add(comment.Span.Start);
+        }
+    }
+
+    private void ReportOrphanDocumentation()
+    {
+        foreach (var comment in _trivia.Where(trivia => trivia.IsDocumentation && !_usedDocumentation.Contains(trivia.Span.Start)))
+        {
+            _diagnostics.ReportWarning(
+                "DOC001",
+                comment.Span,
+                "Documentation comment does not document a declaration.",
+                "Place it directly before a function, type, member, record, or enum declaration.");
+        }
+    }
+
+    private void ValidateFunctionDocumentation(FunctionDeclarationSyntax function) =>
+        ValidateDocumentationParameters(function.Documentation, function.Parameters, function.ReturnType);
+
+    private void ValidateDocumentationParameters(
+        DocumentationCommentSyntax? documentation,
+        IReadOnlyList<ParameterSyntax> parameters,
+        TypeSyntax? returnType)
+    {
+        if (documentation is null)
+        {
+            return;
+        }
+
+        foreach (var line in documentation.Text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (line.StartsWith("@param", StringComparison.Ordinal))
+            {
+                var parameterName = line["@param".Length..].Trim().Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                if (string.IsNullOrWhiteSpace(parameterName) || !parameters.Any(parameter => parameter.Identifier.Text == parameterName))
+                {
+                    _diagnostics.ReportWarning("DOC002", documentation.Span, $"Documentation parameter '{parameterName ?? string.Empty}' does not match a declared parameter.", "Use a parameter name declared by this function or method.");
+                }
+
+                continue;
+            }
+
+            if (line.StartsWith("@returns", StringComparison.Ordinal)
+                && (returnType is null || returnType is NamedTypeSyntax { Identifier.Text: "Unit" }))
+            {
+                _diagnostics.ReportWarning("DOC003", documentation.Span, "A Unit declaration should not document a return value.", "Remove '@returns' or add a non-Unit return type.");
+            }
+        }
     }
 
     private void SkipNewLines()

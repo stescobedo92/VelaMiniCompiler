@@ -1,0 +1,44 @@
+// Configuration helpers. JSON parsing and canonicalization are delegated exclusively to vela.core.json.
+include vela.core.env as env;
+include vela.core.io as io;
+include vela.core.json as json;
+
+/// Reads an environment value with a fallback.
+/// @param name Environment variable name.
+/// @param fallback Value used when the variable is missing.
+fn config_from_environment(name: Text, fallback: Text) -> Text {
+    return env.get_or(name, fallback);
+}
+
+/// Reads and canonicalizes a JSON configuration file.
+/// @param path Configuration file path.
+/// @throws VelaIoException When the file cannot be read.
+/// @throws VelaFormatException When the file is not valid JSON.
+fn config_read_json(path: Text) -> Text {
+    let payload = io.read_text(path);
+    return json.compact(payload);
+}
+
+/// Reads a top-level JSON text field with a fallback.
+/// @param payload Valid JSON configuration payload.
+/// @param key Top-level property name.
+/// @param fallback Value used when the property is absent or not text.
+fn config_get_text(payload: Text, key: Text, fallback: Text) -> Text {
+    let value = json.try_get_text(payload, key);
+    if value.has_value {
+        return value.value;
+    }
+    return fallback;
+}
+
+/// Reads a top-level JSON integer field with a fallback.
+/// @param payload Valid JSON configuration payload.
+/// @param key Top-level property name.
+/// @param fallback Value used when the property is absent or not an integer.
+fn config_get_int(payload: Text, key: Text, fallback: Int) -> Int {
+    let value = json.try_get_int(payload, key);
+    if value.has_value {
+        return value.value;
+    }
+    return fallback;
+}

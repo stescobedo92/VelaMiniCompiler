@@ -16,20 +16,43 @@ public static class VelaCompiler
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(imports);
 
+        return CompileCore(source, imports, new HashSet<string>(StringComparer.Ordinal), null);
+    }
+
+    /// <summary>Compiles dependency-ordered Vela source libraries together with an application source document.</summary>
+    public static VelaCompilation Compile(IReadOnlyList<VelaSourceDocument> documents, IReadOnlyList<VelaLibraryImport>? imports = null)
+    {
+        var bundle = VelaSourceBundle.Create(documents);
+        return CompileCore(bundle.CombinedSource, imports ?? [], bundle.SourcePackages, bundle);
+    }
+
+    private static VelaCompilation CompileCore(
+        SourceText source,
+        IReadOnlyList<VelaLibraryImport> imports,
+        IReadOnlySet<string> sourcePackages,
+        VelaSourceBundle? sourceBundle)
+    {
+
         var parseResult = VelaParser.Parse(source);
         var diagnostics = new DiagnosticBag();
         diagnostics.AddRange(parseResult.Diagnostics);
         if (diagnostics.HasErrors)
         {
-            return new VelaCompilation(source, parseResult, diagnostics.Items.ToArray(), null);
+            return new VelaCompilation(source, parseResult, diagnostics.Items.ToArray(), null, sourceBundle);
         }
 
-        var generatedSource = new CSharpEmitter(source, diagnostics, imports).Emit(parseResult.Root);
+        var generatedSource = new CSharpEmitter(
+            source,
+            diagnostics,
+            imports,
+            sourcePackages,
+            sourceBundle is null ? null : sourceBundle.GetLocation).Emit(parseResult.Root);
         return new VelaCompilation(
             source,
             parseResult,
             diagnostics.Items.ToArray(),
-            diagnostics.HasErrors ? null : generatedSource);
+            diagnostics.HasErrors ? null : generatedSource,
+            sourceBundle);
     }
 
     /// <summary>Compiles one Vela library source document and records its native FFI exports.</summary>

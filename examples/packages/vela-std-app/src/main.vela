@@ -1,0 +1,19 @@
+// Demonstrates source-linked Vela standard-library packages.
+include vela.std.cli as cli;
+include vela.std.config as config;
+include vela.std.log as log;
+include vela.std.test as test;
+
+fn main() -> Int {
+    let defaultName = cli.argument_or(0, "Vela");
+    let payload = "{ \"name\": \"Vela\", \"retries\": 3 }";
+    let name = config.get_text(payload, "name", defaultName);
+    let retries = config.get_int(payload, "retries", 0);
+
+    log.info("loaded configuration for " + name);
+    log.json(payload);
+    test.equal_int(3, retries, "configuration retries");
+    test.equal_text("Vela", name, "configuration name");
+    print(cli.current_directory());
+    return 0;
+}

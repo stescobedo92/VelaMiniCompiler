@@ -23,30 +23,58 @@ internal sealed class CSharpEmitter
     private static readonly HashSet<string> CoreModules = new(StringComparer.Ordinal)
     {
         "vela.core.json", "vela.core.crypto", "vela.core.tcp", "vela.core.text", "vela.core.math",
-        "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env"
+        "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env", "vela.concurrent"
+    };
+    private static readonly Dictionary<string, int> RuntimeExceptionRanks = new(StringComparer.Ordinal)
+    {
+        ["VelaRuntimeException"] = 0,
+        ["VelaIoException"] = 1,
+        ["VelaNetworkException"] = 1,
+        ["VelaFormatException"] = 1,
+        ["VelaOverflowException"] = 1,
+        ["VelaArithmeticException"] = 1,
+        ["VelaNullReferenceException"] = 1,
+        ["VelaIndexOutOfRangeException"] = 1,
+        ["VelaInvalidCastException"] = 1,
+        ["VelaCancellationException"] = 1,
+        ["VelaCleanupException"] = 1
     };
 
-    private readonly SourceText _source;
     private readonly DiagnosticBag _diagnostics;
     private readonly CodeWriter _writer = new();
     private readonly Dictionary<string, FunctionSymbol> _functions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RecordSymbol> _records = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ObjectSymbol> _objects = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EnumSymbol> _enums = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VelaLibraryImport> _imports;
     private readonly Dictionary<string, VelaLibraryImport> _importsByAlias = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _coreModuleAliases = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _sourcePackageAliases = new(StringComparer.Ordinal);
+    private readonly IReadOnlySet<string> _sourcePackages;
+    private readonly Func<TextSpan, TextLocation> _getLocation;
     private ObjectSymbol? _currentObject;
     private bool _libraryMode;
     private string _libraryPackageName = string.Empty;
     private readonly List<VelaFfiExport> _ffiExports = [];
+    private readonly Stack<string> _deferScopes = new();
     private int _loopDepth;
     private int _switchIdentifier;
+    private int _deferScopeIdentifier;
+    private int _deferSnapshotIdentifier;
+    private int _runtimeExceptionMemberIdentifier;
+    private bool _isEmittingAsyncFunction;
 
-    public CSharpEmitter(SourceText source, DiagnosticBag diagnostics, IReadOnlyList<VelaLibraryImport>? imports = null)
+    public CSharpEmitter(
+        SourceText source,
+        DiagnosticBag diagnostics,
+        IReadOnlyList<VelaLibraryImport>? imports = null,
+        IReadOnlySet<string>? sourcePackages = null,
+        Func<TextSpan, TextLocation>? getLocation = null)
     {
-        _source = source;
         _diagnostics = diagnostics;
         _imports = (imports ?? []).ToDictionary(static importItem => importItem.PackageName, StringComparer.Ordinal);
+        _sourcePackages = sourcePackages ?? new HashSet<string>(StringComparer.Ordinal);
+        _getLocation = getLocation ?? source.GetLocation;
     }
 
     public string Emit(CompilationUnitSyntax root)
@@ -74,10 +102,17 @@ internal sealed class CSharpEmitter
         _writer.WriteLine("using System;");
         _writer.WriteLine("using System.Collections.Generic;");
         _writer.WriteLine("using System.Runtime.InteropServices;");
+        _writer.WriteLine("using System.Threading.Tasks;");
         _writer.WriteLine("using Vela.Runtime;");
         _writer.WriteLine();
         _writer.WriteLine("namespace Vela.Generated;");
         _writer.WriteLine();
+
+        foreach (var declaration in root.Members.OfType<EnumDeclarationSyntax>())
+        {
+            EmitEnum(declaration);
+            _writer.WriteLine();
+        }
 
         foreach (var record in root.Members.OfType<RecordDeclarationSyntax>())
         {
@@ -111,7 +146,7 @@ internal sealed class CSharpEmitter
             EmitFunction(function);
         }
 
-        var topLevelStatements = root.Members.Where(static member => member is not FunctionDeclarationSyntax and not RecordDeclarationSyntax and not ObjectDeclarationSyntax and not IncludeDirectiveSyntax).ToArray();
+        var topLevelStatements = root.Members.Where(static member => member is not FunctionDeclarationSyntax and not RecordDeclarationSyntax and not ObjectDeclarationSyntax and not EnumDeclarationSyntax and not IncludeDirectiveSyntax).ToArray();
         if (topLevelStatements.Length > 0)
         {
             _writer.WriteLine();
@@ -157,6 +192,12 @@ internal sealed class CSharpEmitter
 
     private void EmitNativeExport(FunctionDeclarationSyntax function)
     {
+        if (function.AsyncKeyword is not null)
+        {
+            Report("VEL3019", function.AsyncKeyword.Span, "An async function cannot be exported through the native FFI.", "Expose a synchronous ABI-safe wrapper instead.");
+            return;
+        }
+
         if (function.GenericParameters.Count != 0)
         {
             Report("VEL3010", function.Identifier.Span, "FFI functions cannot be generic.", "Expose a concrete FFI-safe signature.");
@@ -211,6 +252,9 @@ internal sealed class CSharpEmitter
                 case ObjectDeclarationSyntax declaration:
                     AddDeclaration(_objects, declaration.Identifier.Text, new ObjectSymbol(declaration), declaration.Identifier.Span, declaration.Kind.ToString().ToLowerInvariant());
                     break;
+                case EnumDeclarationSyntax declaration:
+                    AddDeclaration(_enums, declaration.Identifier.Text, new EnumSymbol(declaration), declaration.Identifier.Span, "enum");
+                    break;
             }
         }
     }
@@ -224,7 +268,30 @@ internal sealed class CSharpEmitter
                 continue;
             }
 
-            if (include.PackageName.StartsWith("vela.core.", StringComparison.Ordinal))
+            if (_sourcePackages.Contains(include.PackageName))
+            {
+                var sourceAlias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
+                if (_sourcePackageAliases.TryGetValue(sourceAlias, out var existingSourcePackage))
+                {
+                    if (!string.Equals(existingSourcePackage, include.PackageName, StringComparison.Ordinal))
+                    {
+                        Report("VEL3000", include.Span, $"Duplicate package alias '{sourceAlias}'.", "Use a unique alias after 'as'.");
+                    }
+
+                    continue;
+                }
+
+                if (_importsByAlias.ContainsKey(sourceAlias) || _coreModuleAliases.ContainsKey(sourceAlias))
+                {
+                    Report("VEL3000", include.Span, $"Duplicate package alias '{sourceAlias}'.", "Use a unique alias after 'as'.");
+                    continue;
+                }
+
+                _sourcePackageAliases.Add(sourceAlias, include.PackageName);
+                continue;
+            }
+
+            if (include.PackageName.StartsWith("vela.core.", StringComparison.Ordinal) || string.Equals(include.PackageName, "vela.concurrent", StringComparison.Ordinal))
             {
                 if (!CoreModules.Contains(include.PackageName))
                 {
@@ -233,7 +300,17 @@ internal sealed class CSharpEmitter
                 }
 
                 var coreAlias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
-                if (!_coreModuleAliases.TryAdd(coreAlias, include.PackageName) || _importsByAlias.ContainsKey(coreAlias))
+                if (_coreModuleAliases.TryGetValue(coreAlias, out var existingCoreModule))
+                {
+                    if (!string.Equals(existingCoreModule, include.PackageName, StringComparison.Ordinal))
+                    {
+                        Report("VEL3000", include.Span, $"Duplicate package alias '{coreAlias}'.", "Use a unique alias after 'as'.");
+                    }
+
+                    continue;
+                }
+
+                if (!_coreModuleAliases.TryAdd(coreAlias, include.PackageName) || _importsByAlias.ContainsKey(coreAlias) || _sourcePackageAliases.ContainsKey(coreAlias))
                 {
                     Report("VEL3000", include.Span, $"Duplicate package alias '{coreAlias}'.", "Use a unique alias after 'as'.");
                 }
@@ -317,15 +394,34 @@ internal sealed class CSharpEmitter
                 Report("VEL3007", main.Syntax.Identifier.Span, "The entry function 'main' must return Int.", "Change the declaration to 'fn main() -> Int:'.");
             }
 
-            _writer.WriteLine("return checked((int)main());");
+            var invocation = main.Syntax.AsyncKeyword is null ? "main()" : "main().GetAwaiter().GetResult()";
+            _writer.WriteLine($"return checked((int){invocation});");
         }
-        else if (root.Members.Any(static member => member is not FunctionDeclarationSyntax and not RecordDeclarationSyntax and not ObjectDeclarationSyntax and not IncludeDirectiveSyntax))
+        else if (root.Members.Any(static member => member is not FunctionDeclarationSyntax and not RecordDeclarationSyntax and not ObjectDeclarationSyntax and not EnumDeclarationSyntax and not IncludeDirectiveSyntax))
         {
             _writer.WriteLine("return __script();");
         }
         else
         {
             _writer.WriteLine("return 0;");
+        }
+
+        _writer.Unindent();
+        _writer.WriteLine("}");
+    }
+
+    private void EmitEnum(EnumDeclarationSyntax declaration)
+    {
+        var accessibility = declaration.PublicKeyword is null ? "internal" : "public";
+        WriteLineDirective(declaration);
+        _writer.WriteLine($"{accessibility} enum {EscapeIdentifier(declaration.Identifier.Text)}");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        for (var index = 0; index < declaration.Members.Count; index++)
+        {
+            var member = declaration.Members[index];
+            var suffix = index == declaration.Members.Count - 1 ? string.Empty : ",";
+            _writer.WriteLine(EscapeIdentifier(member.Identifier.Text) + suffix);
         }
 
         _writer.Unindent();
@@ -378,7 +474,8 @@ internal sealed class CSharpEmitter
                 var parameters = string.Join(", ", method.Parameters.Select(parameter =>
                     $"{CSharpType(ResolveType(parameter.Type, genericNames, parameter.Type.Span))} {EscapeIdentifier(parameter.Identifier.Text)}"));
                 var returnType = ResolveType(method.ReturnType, genericNames, method.Identifier.Span, VelaType.Unit);
-                _writer.WriteLine($"{CSharpType(returnType)} {EscapeIdentifier(method.Identifier.Text)}({parameters});");
+                var emittedReturnType = method.AsyncKeyword is null ? CSharpType(returnType) : CSharpTaskType(returnType);
+                _writer.WriteLine($"{emittedReturnType} {EscapeIdentifier(method.Identifier.Text)}({parameters});");
             }
 
             _writer.Unindent();
@@ -452,11 +549,28 @@ internal sealed class CSharpEmitter
             parameters.Add($"{CSharpType(parameterType)} {EscapeIdentifier(parameter.Identifier.Text)}");
         }
 
+        if (function.AsyncKeyword is not null && function.FfiKeyword is not null)
+        {
+            Report("VEL3019", function.AsyncKeyword.Span, "An async function cannot be exported through the native FFI.", "Expose a synchronous ABI-safe wrapper instead.");
+        }
+
         WriteLineDirective(function);
-        _writer.WriteLine($"public {CSharpType(returnType)} {EscapeIdentifier(function.Identifier.Text)}{FormatGenericParameterNames(genericNames)}({string.Join(", ", parameters)})");
+        var asyncModifier = function.AsyncKeyword is null ? string.Empty : "async ";
+        var emittedReturnType = function.AsyncKeyword is null ? CSharpType(returnType) : CSharpTaskType(returnType);
+        _writer.WriteLine($"public {asyncModifier}{emittedReturnType} {EscapeIdentifier(function.Identifier.Text)}{FormatGenericParameterNames(genericNames)}({string.Join(", ", parameters)})");
         _writer.WriteLine("{");
         _writer.Indent();
-        var alwaysReturns = EmitBlock(function.Body, scope, returnType, isTailBlock: true);
+        var previousAsyncContext = _isEmittingAsyncFunction;
+        _isEmittingAsyncFunction = function.AsyncKeyword is not null;
+        bool alwaysReturns;
+        try
+        {
+            alwaysReturns = EmitBlock(function.Body, scope, returnType, isTailBlock: true);
+        }
+        finally
+        {
+            _isEmittingAsyncFunction = previousAsyncContext;
+        }
         if (!alwaysReturns && !returnType.IsSameAs(VelaType.Unit))
         {
             Report("VEL3007", function.Identifier.Span, $"Method '{function.Identifier.Text}' does not return {returnType} on every path.", "Return a value explicitly or end every control-flow branch with an expression.");
@@ -489,6 +603,12 @@ internal sealed class CSharpEmitter
                 if (implementation is null)
                 {
                     Report("VEL3006", symbol.Syntax.Identifier.Span, $"Type '{symbol.Syntax.Identifier.Text}' does not implement interface method '{required.Identifier.Text}'.", "Add a method with the interface signature.");
+                    continue;
+                }
+
+                if ((required.AsyncKeyword is not null) != (implementation.AsyncKeyword is not null))
+                {
+                    Report("VEL3006", implementation.Identifier.Span, $"Method '{implementation.Identifier.Text}' does not match the async contract required by '{interfaceSymbol.Syntax.Identifier.Text}'.", "Mark both declarations async or make both synchronous.");
                 }
             }
         }
@@ -510,11 +630,28 @@ internal sealed class CSharpEmitter
             parameters.Add($"{CSharpType(parameterType)} {EscapeIdentifier(parameter.Identifier.Text)}");
         }
 
+        if (function.AsyncKeyword is not null && function.FfiKeyword is not null)
+        {
+            Report("VEL3019", function.AsyncKeyword.Span, "An async function cannot be exported through the native FFI.", "Expose a synchronous ABI-safe wrapper instead.");
+        }
+
         WriteLineDirective(function);
-        _writer.WriteLine($"internal static {CSharpType(returnType)} {EscapeIdentifier(function.Identifier.Text)}{FormatGenericParameterNames(genericNames)}({string.Join(", ", parameters)})");
+        var asyncModifier = function.AsyncKeyword is null ? string.Empty : "async ";
+        var emittedReturnType = function.AsyncKeyword is null ? CSharpType(returnType) : CSharpTaskType(returnType);
+        _writer.WriteLine($"internal static {asyncModifier}{emittedReturnType} {EscapeIdentifier(function.Identifier.Text)}{FormatGenericParameterNames(genericNames)}({string.Join(", ", parameters)})");
         _writer.WriteLine("{");
         _writer.Indent();
-        var alwaysReturns = EmitBlock(function.Body, scope, returnType, isTailBlock: true);
+        var previousAsyncContext = _isEmittingAsyncFunction;
+        _isEmittingAsyncFunction = function.AsyncKeyword is not null;
+        bool alwaysReturns;
+        try
+        {
+            alwaysReturns = EmitBlock(function.Body, scope, returnType, isTailBlock: true);
+        }
+        finally
+        {
+            _isEmittingAsyncFunction = previousAsyncContext;
+        }
         if (!alwaysReturns && !returnType.IsSameAs(VelaType.Unit))
         {
             Report("VEL3007", function.Identifier.Span, $"Function '{function.Identifier.Text}' does not return {returnType} on every path.", "Return a value explicitly or end every control-flow branch with an expression.");
@@ -544,7 +681,46 @@ internal sealed class CSharpEmitter
     private bool EmitBlock(BlockSyntax block, Scope parent, VelaType returnType, bool isTailBlock)
     {
         var scope = new Scope(parent);
-        return EmitStatements(block.Statements, scope, returnType, isTailBlock);
+        if (!block.Statements.Any(static statement => statement is DeferStatementSyntax))
+        {
+            return EmitStatements(block.Statements, scope, returnType, isTailBlock);
+        }
+
+        var identifier = _deferScopeIdentifier++.ToString(CultureInfo.InvariantCulture);
+        var deferScope = "__velaDefers" + identifier;
+        var primaryException = "__velaPrimaryException" + identifier;
+        _writer.WriteLine($"var {deferScope} = new VelaDeferScope();");
+        _writer.WriteLine($"Exception {primaryException} = null;");
+        _writer.WriteLine("try");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        _deferScopes.Push(deferScope);
+        bool returns;
+        try
+        {
+            returns = EmitStatements(block.Statements, scope, returnType, isTailBlock);
+        }
+        finally
+        {
+            _ = _deferScopes.Pop();
+        }
+
+        _writer.Unindent();
+        _writer.WriteLine("}");
+        _writer.WriteLine($"catch (Exception __velaFailure{identifier})");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        _writer.WriteLine($"{primaryException} = __velaFailure{identifier};");
+        _writer.WriteLine("throw;");
+        _writer.Unindent();
+        _writer.WriteLine("}");
+        _writer.WriteLine("finally");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        _writer.WriteLine($"{deferScope}.Run({primaryException});");
+        _writer.Unindent();
+        _writer.WriteLine("}");
+        return returns;
     }
 
     private bool EmitStatements(IReadOnlyList<StatementSyntax> statements, Scope scope, VelaType returnType, bool tailReturnsValue)
@@ -584,6 +760,11 @@ internal sealed class CSharpEmitter
             case AssertStatementSyntax assertion:
                 EmitAssert(assertion, scope);
                 return false;
+            case DeferStatementSyntax defer:
+                EmitDefer(defer, scope);
+                return false;
+            case TryStatementSyntax protectedStatement:
+                return EmitTry(protectedStatement, scope, returnType, isTail);
             case ExpressionStatementSyntax expressionStatement:
                 return EmitExpressionStatement(expressionStatement.Expression, scope, returnType, isTail);
             case IfStatementSyntax conditional:
@@ -599,8 +780,7 @@ internal sealed class CSharpEmitter
             case ContinueStatementSyntax continueStatement:
                 return EmitLoopControl(continueStatement.ContinueKeyword, "continue");
             case SwitchStatementSyntax selection:
-                EmitSwitch(selection, scope, returnType);
-                return false;
+                return EmitSwitch(selection, scope, returnType, isTail);
             case FunctionDeclarationSyntax:
             case RecordDeclarationSyntax:
                 Report("VEL3012", statement.Span, "Declarations are only allowed at the top level.", "Move this declaration outside the current function or block.");
@@ -653,6 +833,134 @@ internal sealed class CSharpEmitter
         }
 
         _writer.WriteLine($"Contract.Require({condition.Code}, {messageCode});");
+    }
+
+    private bool EmitTry(TryStatementSyntax protectedStatement, Scope scope, VelaType returnType, bool isTail)
+    {
+        _writer.WriteLine("try");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        var tryReturns = EmitBlock(protectedStatement.TryBlock, scope, returnType, isTail);
+        _writer.Unindent();
+        _writer.WriteLine("}");
+
+        var catchReturns = new List<bool>();
+        var caughtTypes = new HashSet<string>(StringComparer.Ordinal);
+        var caughtBaseException = false;
+        foreach (var catchClause in protectedStatement.Catches)
+        {
+            var exceptionType = ResolveType(catchClause.ExceptionType, EmptyGenericNames, catchClause.ExceptionType.Span);
+            if (!RuntimeExceptionRanks.TryGetValue(exceptionType.Name, out var rank))
+            {
+                Report("VEL3018", catchClause.ExceptionType.Span, $"Type '{exceptionType}' cannot be used in a Vela catch clause.", "Catch one of the documented Vela runtime exception types.");
+            }
+            else
+            {
+                if (!caughtTypes.Add(exceptionType.Name))
+                {
+                    Report("VEL3018", catchClause.ExceptionType.Span, $"Duplicate catch for '{exceptionType.Name}'.", "Keep one handler for each exception type.");
+                }
+
+                if (caughtBaseException && rank > 0)
+                {
+                    Report("VEL3018", catchClause.ExceptionType.Span, $"Catch for '{exceptionType.Name}' is unreachable after VelaRuntimeException.", "Place more-specific exception types before VelaRuntimeException.");
+                }
+
+                caughtBaseException |= rank == 0;
+            }
+
+            var catchScope = new Scope(scope);
+            AddVariable(catchScope, catchClause.Identifier.Text, new VariableSymbol(exceptionType, false), catchClause.Identifier.Span);
+            _writer.WriteLine($"catch ({CSharpType(exceptionType)} {EscapeIdentifier(catchClause.Identifier.Text)})");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            catchReturns.Add(EmitBlock(catchClause.Block, catchScope, returnType, isTail));
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+
+        if (protectedStatement.FinallyClause is not null)
+        {
+            _writer.WriteLine("finally");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            _ = EmitBlock(protectedStatement.FinallyClause.Block, scope, returnType, isTailBlock: false);
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+
+        return isTail && tryReturns && (catchReturns.Count == 0 || catchReturns.All(static returns => returns));
+    }
+
+    private void EmitDefer(DeferStatementSyntax defer, Scope scope)
+    {
+        if (!_deferScopes.TryPeek(out var deferScope))
+        {
+            Report("VEL3017", defer.Span, "A defer statement is only valid inside a block.", "Move the deferred call into a function or control-flow block.");
+            return;
+        }
+
+        if (defer.Invocation is not CallExpressionSyntax call)
+        {
+            Report("VEL3017", defer.Invocation.Span, "A defer statement requires a call expression.", "Use syntax such as 'defer tcp.close(connection);'.");
+            return;
+        }
+
+        var snapshotScope = new Scope(scope);
+        var callee = SnapshotDeferredCallee(call.Callee, scope, snapshotScope);
+        var arguments = new List<ExpressionSyntax>(call.Arguments.Count);
+        foreach (var argument in call.Arguments)
+        {
+            var value = EmitExpression(argument, scope);
+            var name = CreateDeferSnapshot(value, snapshotScope);
+            arguments.Add(new NameExpressionSyntax(new SyntaxToken(TokenKind.Identifier, argument.Span, name)));
+        }
+
+        var snapshot = new CallExpressionSyntax(
+            callee,
+            call.LessToken,
+            call.TypeArguments,
+            call.GreaterToken,
+            call.LeftParenthesis,
+            arguments,
+            call.RightParenthesis);
+        var invocation = EmitCall(snapshot, snapshotScope);
+        _writer.WriteLine($"{deferScope}.Push(() => {{ {invocation.Code}; }});");
+    }
+
+    private ExpressionSyntax SnapshotDeferredCallee(ExpressionSyntax callee, Scope scope, Scope snapshotScope)
+    {
+        if (callee is NameExpressionSyntax)
+        {
+            return callee;
+        }
+
+        if (callee is MemberAccessExpressionSyntax member)
+        {
+            if (member.Receiver is NameExpressionSyntax { Identifier.Text: var alias }
+                && (_coreModuleAliases.ContainsKey(alias) || _importsByAlias.ContainsKey(alias)))
+            {
+                return member;
+            }
+
+            var receiver = EmitExpression(member.Receiver, scope);
+            var name = CreateDeferSnapshot(receiver, snapshotScope);
+            return new MemberAccessExpressionSyntax(
+                new NameExpressionSyntax(new SyntaxToken(TokenKind.Identifier, member.Receiver.Span, name)),
+                member.DotToken,
+                member.Member);
+        }
+
+        Report("VEL3017", callee.Span, "A deferred call must have a named function or member target.", "Call a function directly or defer an instance/core-module method call.");
+        return callee;
+    }
+
+    private string CreateDeferSnapshot(ExpressionResult value, Scope scope)
+    {
+        var name = "__velaDeferValue" + _deferSnapshotIdentifier++.ToString(CultureInfo.InvariantCulture);
+        _writer.WriteLine($"var {name} = {value.Code};");
+        AddVariable(scope, name, new VariableSymbol(value.Type, false), default);
+        return name;
     }
 
     private bool EmitExpressionStatement(ExpressionSyntax expression, Scope scope, VelaType returnType, bool isTail)
@@ -749,24 +1057,31 @@ internal sealed class CSharpEmitter
         return true;
     }
 
-    private void EmitSwitch(SwitchStatementSyntax selection, Scope scope, VelaType returnType)
+    private bool EmitSwitch(SwitchStatementSyntax selection, Scope scope, VelaType returnType, bool isTail)
     {
         var subject = EmitExpression(selection.Expression, scope);
-        if (subject.Type.Name is not "Int" and not "UInt" and not "Long" and not "Bool" and not "Text")
+        var isEnum = _enums.TryGetValue(subject.Type.Name, out var enumSymbol);
+        if (!isEnum && subject.Type.Name is not "Int" and not "UInt" and not "Long" and not "Bool" and not "Text")
         {
-            Report("VEL3006", selection.Expression.Span, $"Switch does not support values of type '{subject.Type}'.", "Use Int, UInt, Long, Bool, or Text.");
+            Report("VEL3006", selection.Expression.Span, $"Switch does not support values of type '{subject.Type}'.", "Use Int, UInt, Long, Bool, Text, or an enum.");
         }
 
         var subjectName = "__velaSwitch" + _switchIdentifier++.ToString(CultureInfo.InvariantCulture);
         _writer.WriteLine($"var {subjectName} = {subject.Code};");
         var seenCases = new HashSet<string>(StringComparer.Ordinal);
         var hasCase = false;
+        var everyCaseReturns = true;
         foreach (var switchCase in selection.Cases)
         {
             var value = EmitExpression(switchCase.Value, scope);
-            if (switchCase.Value is not LiteralExpressionSyntax)
+            if (!isEnum && switchCase.Value is not LiteralExpressionSyntax)
             {
                 Report("VEL3006", switchCase.Value.Span, "Switch case values must be literals.", "Use an Int, UInt, Long, Bool, or Text literal.");
+            }
+
+            if (isEnum && switchCase.Value is not MemberAccessExpressionSyntax)
+            {
+                Report("VEL3006", switchCase.Value.Span, $"Switch cases for enum '{subject.Type}' must use a qualified enum member.", $"Use '{subject.Type}.Member'.");
             }
 
             if (!subject.Type.IsSameAs(value.Type))
@@ -790,21 +1105,45 @@ internal sealed class CSharpEmitter
             _writer.WriteLine(hasCase ? $"else if ({subjectName} == {value.Code})" : $"if ({subjectName} == {value.Code})");
             _writer.WriteLine("{");
             _writer.Indent();
-            _ = EmitBlock(switchCase.Body, scope, returnType, isTailBlock: false);
+            var caseReturns = EmitBlock(switchCase.Body, scope, returnType, isTailBlock: isTail);
             _writer.Unindent();
             _writer.WriteLine("}");
             hasCase = true;
+            everyCaseReturns &= caseReturns;
         }
 
+        var isExhaustiveEnum = isEnum && enumSymbol!.Syntax.Members.All(member => seenCases.Contains($"{subject.Type}|{EscapeIdentifier(subject.Type.Name)}.{EscapeIdentifier(member.Identifier.Text)}"));
+        var defaultReturns = false;
         if (selection.DefaultClause is not null)
         {
             _writer.WriteLine(hasCase ? "else" : "if (true)");
             _writer.WriteLine("{");
             _writer.Indent();
-            _ = EmitBlock(selection.DefaultClause.Body, scope, returnType, isTailBlock: false);
+            defaultReturns = EmitBlock(selection.DefaultClause.Body, scope, returnType, isTailBlock: isTail);
             _writer.Unindent();
             _writer.WriteLine("}");
         }
+
+        if (isEnum && selection.DefaultClause is null && !isExhaustiveEnum)
+        {
+            var missing = enumSymbol!.Syntax.Members
+                .Where(member => !seenCases.Contains($"{subject.Type}|{EscapeIdentifier(subject.Type.Name)}.{EscapeIdentifier(member.Identifier.Text)}"))
+                .Select(member => member.Identifier.Text)
+                .ToArray();
+            Report("VEL3016", selection.Span, $"Switch over enum '{subject.Type}' is not exhaustive; missing: {string.Join(", ", missing)}.", "Handle every enum member or add a default block.");
+        }
+
+        if (isExhaustiveEnum && selection.DefaultClause is null)
+        {
+            _writer.WriteLine("else");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            _writer.WriteLine("throw new InvalidOperationException(\"Unreachable exhaustive Vela enum switch.\");");
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+
+        return isTail && everyCaseReturns && (defaultReturns || isExhaustiveEnum);
     }
 
     private ExpressionResult EmitExpression(ExpressionSyntax expression, Scope scope)
@@ -816,6 +1155,7 @@ internal sealed class CSharpEmitter
             MemberAccessExpressionSyntax member => EmitMember(member, scope),
             IndexExpressionSyntax index => EmitIndex(index, scope),
             UnaryExpressionSyntax unary => EmitUnary(unary, scope),
+            AwaitExpressionSyntax awaited => EmitAwait(awaited, scope),
             BinaryExpressionSyntax binary => EmitBinary(binary, scope),
             AssignmentExpressionSyntax assignment => EmitAssignment(assignment, scope),
             ParenthesizedExpressionSyntax parenthesized => EmitParenthesized(parenthesized, scope),
@@ -823,6 +1163,23 @@ internal sealed class CSharpEmitter
             ListExpressionSyntax list => EmitList(list, scope),
             _ => UnsupportedExpression(expression)
         };
+    }
+
+    private ExpressionResult EmitAwait(AwaitExpressionSyntax awaited, Scope scope)
+    {
+        var future = EmitExpression(awaited.Expression, scope);
+        if (!_isEmittingAsyncFunction)
+        {
+            Report("VEL3019", awaited.AwaitKeyword.Span, "'await' is only valid inside an async function.", "Mark the containing function with 'async'.");
+        }
+
+        if (!future.Type.IsFuture)
+        {
+            Report("VEL3019", awaited.Expression.Span, $"Cannot await expression of type '{future.Type}'.", "Await a Future<T> returned by an async function or asynchronous core operation.");
+            return new ExpressionResult(VelaType.Unknown, $"await {future.Code}");
+        }
+
+        return new ExpressionResult(future.Type.TypeArguments[0], $"await {future.Code}");
     }
 
     private ExpressionResult EmitLiteral(LiteralExpressionSyntax literal)
@@ -864,7 +1221,7 @@ internal sealed class CSharpEmitter
             return new ExpressionResult(variable.Type, EscapeIdentifier(name.Identifier.Text));
         }
 
-        if (_functions.ContainsKey(name.Identifier.Text) || _records.ContainsKey(name.Identifier.Text) || _objects.ContainsKey(name.Identifier.Text))
+        if (_functions.ContainsKey(name.Identifier.Text) || _records.ContainsKey(name.Identifier.Text) || _objects.ContainsKey(name.Identifier.Text) || _enums.ContainsKey(name.Identifier.Text))
         {
             return new ExpressionResult(VelaType.Unknown, EscapeIdentifier(name.Identifier.Text));
         }
@@ -875,7 +1232,29 @@ internal sealed class CSharpEmitter
 
     private ExpressionResult EmitMember(MemberAccessExpressionSyntax member, Scope scope)
     {
+        if (member.Receiver is NameExpressionSyntax enumName && _enums.TryGetValue(enumName.Identifier.Text, out var enumSymbol))
+        {
+            if (enumSymbol.Syntax.Members.Any(candidate => candidate.Identifier.Text == member.Member.Text))
+            {
+                return new ExpressionResult(new VelaType(enumSymbol.Syntax.Identifier.Text), $"{EscapeIdentifier(enumName.Identifier.Text)}.{EscapeIdentifier(member.Member.Text)}");
+            }
+
+            Report("VEL3009", member.Member.Span, $"Enum '{enumName.Identifier.Text}' does not contain case '{member.Member.Text}'.", "Use a declared enum member.");
+            return new ExpressionResult(VelaType.Unknown, $"{EscapeIdentifier(enumName.Identifier.Text)}.{EscapeIdentifier(member.Member.Text)}");
+        }
+
         var receiver = EmitExpression(member.Receiver, scope);
+        if (RuntimeExceptionRanks.ContainsKey(receiver.Type.Name))
+        {
+            var sourceLocationVariable = "__velaSourceLocation" + (_runtimeExceptionMemberIdentifier++).ToString(CultureInfo.InvariantCulture);
+            return member.Member.Text switch
+            {
+                "message" => new ExpressionResult(VelaType.Text, $"{receiver.Code}.Message"),
+                "source_location" => new ExpressionResult(new VelaType("Option", [VelaType.Text]), $"{receiver.Code}.SourceLocation is {{ }} {sourceLocationVariable} ? Option.Some({sourceLocationVariable}) : Option.None<string>()"),
+                _ => ReportUnknownRuntimeExceptionMember(member, receiver)
+            };
+        }
+
         if (_records.TryGetValue(receiver.Type.Name, out var record))
         {
             var field = record.Syntax.Members.OfType<RecordFieldSyntax>().FirstOrDefault(candidate => candidate.Identifier.Text == member.Member.Text);
@@ -930,6 +1309,12 @@ internal sealed class CSharpEmitter
     private ExpressionResult ReportUnknownOptionalMember(MemberAccessExpressionSyntax member, ExpressionResult receiver)
     {
         Report("VEL3009", member.Member.Span, $"Option does not contain member '{member.Member.Text}'.", "Use 'has_value' to test the option or 'value' to read the contained value.");
+        return new ExpressionResult(VelaType.Unknown, $"{receiver.Code}.{EscapeIdentifier(member.Member.Text)}");
+    }
+
+    private ExpressionResult ReportUnknownRuntimeExceptionMember(MemberAccessExpressionSyntax member, ExpressionResult receiver)
+    {
+        Report("VEL3009", member.Member.Span, $"Runtime exception '{receiver.Type}' does not contain member '{member.Member.Text}'.", "Use 'message' or 'source_location'.");
         return new ExpressionResult(VelaType.Unknown, $"{receiver.Code}.{EscapeIdentifier(member.Member.Text)}");
     }
 
@@ -1270,6 +1655,11 @@ internal sealed class CSharpEmitter
             return EmitImportedFunctionCall(call, member, importItem, scope);
         }
 
+        if (member.Receiver is NameExpressionSyntax { Identifier.Text: var sourceAlias } && _sourcePackageAliases.TryGetValue(sourceAlias, out var sourcePackage))
+        {
+            return EmitSourcePackageFunctionCall(call, member, sourcePackage, scope);
+        }
+
         var receiver = EmitExpression(member.Receiver, scope);
         if (_objects.TryGetValue(receiver.Type.Name, out var objectSymbol) && objectSymbol.Syntax.Kind != ObjectDeclarationKind.Interface)
         {
@@ -1277,6 +1667,20 @@ internal sealed class CSharpEmitter
         }
 
         return EmitCollectionMethodCall(call, member, scope, receiver);
+    }
+
+    private ExpressionResult EmitSourcePackageFunctionCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, string packageName, Scope scope)
+    {
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var module = packageName[(packageName.LastIndexOf('.') + 1)..].Replace("-", "_", StringComparison.Ordinal);
+        var functionName = module + "_" + member.Member.Text;
+        if (_functions.TryGetValue(functionName, out var function))
+        {
+            return EmitFunctionCall(call, function, arguments, call.TypeArguments.Select(type => ResolveType(type, EmptyGenericNames, type.Span)).ToArray());
+        }
+
+        Report("VEL3005", member.Member.Span, $"Source package '{packageName}' does not export function '{member.Member.Text}'.", $"Declare 'fn {functionName}(...)' in package '{packageName}'.");
+        return new ExpressionResult(VelaType.Unknown, $"{EscapeIdentifier(functionName)}({string.Join(", ", arguments.Select(static argument => argument.Code))})");
     }
 
     private ExpressionResult EmitCoreModuleCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, string module, Scope scope)
@@ -1299,6 +1703,7 @@ internal sealed class CSharpEmitter
             "vela.core.io" => EmitIoCall(call, member.Member, arguments),
             "vela.core.encoding" => EmitEncodingCall(call, member.Member, arguments),
             "vela.core.env" => EmitEnvironmentCall(call, member.Member, arguments),
+            "vela.concurrent" => EmitConcurrentCall(call, member.Member, arguments),
             _ => ReportUnknownCoreOperation(member.Member, module)
         };
     }
@@ -1326,8 +1731,11 @@ internal sealed class CSharpEmitter
     private ExpressionResult EmitTcpCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
     {
         "connect" => EmitCoreFunction(call, operation, arguments, VelaType.TcpConnection, [VelaType.Text, VelaType.Int, VelaType.Int], values => $"TcpConnection.Connect({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
+        "connect_async" => EmitCoreFunction(call, operation, arguments, new VelaType("Future", [VelaType.TcpConnection]), [VelaType.Text, VelaType.Int, VelaType.Int, VelaType.Cancellation], values => $"TcpConnection.ConnectAsync({values[0]}, {values[1]}, {values[2]}, {values[3]}, {SourceLocationCode(call)})"),
         "send_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.TcpConnection, VelaType.Text], values => $"{values[0]}.SendText({values[1]}, {SourceLocationCode(call)})"),
+        "send_text_async" => EmitCoreFunction(call, operation, arguments, new VelaType("Future", [VelaType.Unit]), [VelaType.TcpConnection, VelaType.Text, VelaType.Cancellation], values => $"{values[0]}.SendTextAsync({values[1]}, {values[2]}, {SourceLocationCode(call)})"),
         "receive_text" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.TcpConnection, VelaType.Int], values => $"{values[0]}.ReceiveText({values[1]}, {SourceLocationCode(call)})"),
+        "receive_text_async" => EmitCoreFunction(call, operation, arguments, new VelaType("Future", [VelaType.Text]), [VelaType.TcpConnection, VelaType.Int, VelaType.Cancellation], values => $"{values[0]}.ReceiveTextAsync({values[1]}, {values[2]}, {SourceLocationCode(call)})"),
         "close" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.TcpConnection], values => $"{values[0]}.Dispose()"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.tcp")
     };
@@ -1449,6 +1857,14 @@ internal sealed class CSharpEmitter
         "argument" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Int], values => $"VelaEnvironment.Argument({values[0]})"),
         "current_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [], _ => "VelaEnvironment.CurrentDirectory()"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.env")
+    };
+
+    private ExpressionResult EmitConcurrentCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "create" => EmitCoreFunction(call, operation, arguments, VelaType.Cancellation, [], _ => "VelaCancellation.Create()"),
+        "cancel" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Cancellation], values => $"{values[0]}.Cancel()"),
+        "is_cancelled" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Cancellation], values => $"{values[0]}.IsCancellationRequested"),
+        _ => ReportUnknownCoreOperation(operation, "vela.concurrent")
     };
 
     private ExpressionResult EmitCoreFunction(
@@ -1574,7 +1990,8 @@ internal sealed class CSharpEmitter
         }
 
         var returnType = ResolveType(method.ReturnType, objectSymbol.GenericNames, method.Identifier.Span, VelaType.Unit);
-        return new ExpressionResult(returnType, $"{receiver.Code}.{EscapeIdentifier(member.Text)}({string.Join(", ", arguments.Select(static argument => argument.Code))})");
+        var callableReturnType = method.AsyncKeyword is null ? returnType : new VelaType("Future", [returnType]);
+        return new ExpressionResult(callableReturnType, $"{receiver.Code}.{EscapeIdentifier(member.Text)}({string.Join(", ", arguments.Select(static argument => argument.Code))})");
     }
 
     private ExpressionResult EmitVectorMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
@@ -1871,6 +2288,7 @@ internal sealed class CSharpEmitter
         }
 
         var returnType = ResolveType(function.Syntax.ReturnType, function.GenericNames, function.Syntax.Identifier.Span, defaultType: VelaType.Unit).Substitute(substitutions);
+        var callableReturnType = function.Syntax.AsyncKeyword is null ? returnType : new VelaType("Future", [returnType]);
         var typeArguments = explicitTypes.Length > 0
             ? $"<{string.Join(", ", explicitTypes.Select(CSharpType))}>"
             : string.Empty;
@@ -1886,7 +2304,7 @@ internal sealed class CSharpEmitter
         });
         var qualifier = _currentObject is null ? string.Empty : "Program.";
         var code = $"{qualifier}{EscapeIdentifier(function.Syntax.Identifier.Text)}{typeArguments}({string.Join(", ", argumentCodes)})";
-        return new ExpressionResult(returnType, code);
+        return new ExpressionResult(callableReturnType, code);
     }
 
     private ExpressionResult EmitRecordConstruction(CallExpressionSyntax call, RecordSymbol record, ExpressionResult[] arguments, VelaType[] explicitTypes)
@@ -2032,11 +2450,13 @@ internal sealed class CSharpEmitter
             "Text" or "String" => VelaType.Text,
             "Any" => VelaType.Any,
             "TcpConnection" => VelaType.TcpConnection,
+            "Cancellation" => VelaType.Cancellation,
             "Unit" => VelaType.Unit,
             "List" or "Vector" => new VelaType("List", arguments),
-            "Array" or "Result" or "Option" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" => new VelaType(named.Identifier.Text, arguments),
+            "Array" or "Result" or "Option" or "Future" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" => new VelaType(named.Identifier.Text, arguments),
+            _ when RuntimeExceptionRanks.ContainsKey(named.Identifier.Text) && arguments.Length == 0 => new VelaType(named.Identifier.Text),
             _ when genericNames.Contains(named.Identifier.Text) && arguments.Length == 0 => new VelaType(named.Identifier.Text),
-            _ when _records.ContainsKey(named.Identifier.Text) || _objects.ContainsKey(named.Identifier.Text) => new VelaType(named.Identifier.Text, arguments),
+            _ when _records.ContainsKey(named.Identifier.Text) || _objects.ContainsKey(named.Identifier.Text) || _enums.ContainsKey(named.Identifier.Text) => new VelaType(named.Identifier.Text, arguments),
             _ => ReportUnknownType(named)
         };
 
@@ -2059,11 +2479,12 @@ internal sealed class CSharpEmitter
     {
         int expected = type.Name switch
         {
-            "List" or "Array" or "Option" or "HashSet" or "Queue" or "Stack" or "RingBuffer" => 1,
+            "List" or "Array" or "Option" or "Future" or "HashSet" or "Queue" or "Stack" or "RingBuffer" => 1,
             "Result" or "HashMap" => 2,
             "BitSet" => 0,
             _ when _records.TryGetValue(type.Name, out var record) => record.GenericNames.Length,
             _ when _objects.TryGetValue(type.Name, out var objectDeclaration) => objectDeclaration.GenericNames.Length,
+            _ when _enums.ContainsKey(type.Name) => 0,
             _ => 0
         };
 
@@ -2290,7 +2711,7 @@ internal sealed class CSharpEmitter
 
     private string SourceLocationCode(SyntaxNode syntax)
     {
-        var location = _source.GetLocation(syntax.Span);
+        var location = _getLocation(syntax.Span);
         return QuoteString($"{location.FilePath}:{location.Line}:{location.Column}");
     }
 
@@ -2322,7 +2743,7 @@ internal sealed class CSharpEmitter
 
     private void EnsureHashable(VelaType type, TextSpan span)
     {
-        if (type.IsUnknown || type.Name is "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal" or "Bool" or "Text" or "Option" or "Result" || _records.ContainsKey(type.Name) || _objects.TryGetValue(type.Name, out var objectSymbol) && objectSymbol.Syntax.Kind == ObjectDeclarationKind.Struct)
+        if (type.IsUnknown || type.Name is "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal" or "Bool" or "Text" or "Option" or "Result" || _records.ContainsKey(type.Name) || _enums.ContainsKey(type.Name) || _objects.TryGetValue(type.Name, out var objectSymbol) && objectSymbol.Syntax.Kind == ObjectDeclarationKind.Struct)
         {
             return;
         }
@@ -2357,8 +2778,8 @@ internal sealed class CSharpEmitter
 
     private void WriteLineDirective(SyntaxNode syntax)
     {
-        var location = _source.GetLocation(syntax.Span);
-        var path = _source.FilePath.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
+        var location = _getLocation(syntax.Span);
+        var path = location.FilePath.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
         _writer.WriteLine($"#line {location.Line.ToString(CultureInfo.InvariantCulture)} \"{path}\"");
     }
 
@@ -2374,9 +2795,11 @@ internal sealed class CSharpEmitter
         "Text" => "string",
         "Any" => "object",
         "TcpConnection" => "TcpConnection",
+        "Cancellation" => "VelaCancellation",
         "Unit" => "void",
         "Option" when type.TypeArguments.Count == 1 => $"Option<{CSharpType(type.TypeArguments[0])}>",
         "Result" when type.TypeArguments.Count == 2 => $"Result<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",
+        "Future" when type.TypeArguments.Count == 1 => CSharpTaskType(type.TypeArguments[0]),
         "List" when type.TypeArguments.Count == 1 => $"VelaVector<{CSharpType(type.TypeArguments[0])}>",
         "Array" when type.TypeArguments.Count == 1 => $"VelaArray<{CSharpType(type.TypeArguments[0])}>",
         "HashMap" when type.TypeArguments.Count == 2 => $"VelaHashMap<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",
@@ -2390,6 +2813,10 @@ internal sealed class CSharpEmitter
         _ when type.TypeArguments.Count == 0 => EscapeIdentifier(type.Name),
         _ => $"{EscapeIdentifier(type.Name)}<{string.Join(", ", type.TypeArguments.Select(CSharpType))}>"
     };
+
+    private static string CSharpTaskType(VelaType type) => type.IsSameAs(VelaType.Unit)
+        ? "Task"
+        : $"Task<{CSharpType(type)}>";
 
     private static string DefaultValue(VelaType type) => type.Name switch
     {
@@ -2452,6 +2879,8 @@ internal sealed class CSharpEmitter
     {
         public string[] GenericNames { get; } = Syntax.GenericParameters.Select(static parameter => parameter.Identifier.Text).ToArray();
     }
+
+    private sealed record EnumSymbol(EnumDeclarationSyntax Syntax);
 
     private sealed class Scope(Scope? parent)
     {

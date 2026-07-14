@@ -1,0 +1,4 @@
+[package]
+name = "vela.std.test"
+version = "0.1.0"
+kind = "source-library"

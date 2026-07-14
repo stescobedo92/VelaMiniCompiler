@@ -1,0 +1,19 @@
+{
+  "LockVersion": 1,
+  "Packages": [
+    {
+      "Name": "vela.http.sample",
+      "Version": "0.1.0",
+      "Kind": "application",
+      "Path": ".",
+      "ManifestHash": "21e4010be6e03f3b8e4dd9597dbae17371c3fea1420daea7591bb50182371232"
+    },
+    {
+      "Name": "vela.std.http",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.http",
+      "ManifestHash": "6028319be68c4e0b966753642cd0fffa4590362a599ad0c9ad05b89bb9799392"
+    }
+  ]
+}

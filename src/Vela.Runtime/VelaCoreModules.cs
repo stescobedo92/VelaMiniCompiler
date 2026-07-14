@@ -339,6 +339,33 @@ public sealed class TcpConnection : IDisposable
         }
     }
 
+    /// <summary>Connects asynchronously with timeout and explicit Vela cancellation.</summary>
+    public static async Task<TcpConnection> ConnectAsync(string host, int port, int timeoutMilliseconds, VelaCancellation cancellation, string sourceLocation)
+    {
+        ArgumentNullException.ThrowIfNull(cancellation);
+        ValidateConnectionOptions(port, timeoutMilliseconds, sourceLocation);
+        var client = new TcpClient();
+        try
+        {
+            using var timeout = new CancellationTokenSource(timeoutMilliseconds);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellation.Token, timeout.Token);
+            await client.ConnectAsync(host, port, linked.Token).ConfigureAwait(false);
+            client.ReceiveTimeout = timeoutMilliseconds;
+            client.SendTimeout = timeoutMilliseconds;
+            return new TcpConnection(client);
+        }
+        catch (OperationCanceledException exception) when (cancellation.IsCancellationRequested)
+        {
+            client.Dispose();
+            throw new VelaCancellationException(sourceLocation, exception);
+        }
+        catch (Exception exception) when (exception is SocketException or OperationCanceledException or ArgumentException)
+        {
+            client.Dispose();
+            throw new VelaNetworkException("TCP connection failed.", sourceLocation, exception);
+        }
+    }
+
     /// <summary>Sends UTF-8 text synchronously.</summary>
     public void SendText(string value, string sourceLocation)
     {
@@ -347,6 +374,25 @@ public sealed class TcpConnection : IDisposable
             ThrowIfDisposed(sourceLocation);
             var bytes = Encoding.UTF8.GetBytes(value);
             _client.GetStream().Write(bytes);
+        }
+        catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException)
+        {
+            throw new VelaNetworkException("TCP send failed.", sourceLocation, exception);
+        }
+    }
+
+    /// <summary>Sends UTF-8 text asynchronously with explicit Vela cancellation.</summary>
+    public async Task SendTextAsync(string value, VelaCancellation cancellation, string sourceLocation)
+    {
+        ArgumentNullException.ThrowIfNull(cancellation);
+        try
+        {
+            ThrowIfDisposed(sourceLocation);
+            await _client.GetStream().WriteAsync(Encoding.UTF8.GetBytes(value), cancellation.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException exception) when (cancellation.IsCancellationRequested)
+        {
+            throw new VelaCancellationException(sourceLocation, exception);
         }
         catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException)
         {
@@ -375,6 +421,28 @@ public sealed class TcpConnection : IDisposable
         }
     }
 
+    /// <summary>Reads one bounded UTF-8 chunk asynchronously with explicit Vela cancellation.</summary>
+    public async Task<string> ReceiveTextAsync(int maximumBytes, VelaCancellation cancellation, string sourceLocation)
+    {
+        ArgumentNullException.ThrowIfNull(cancellation);
+        ValidateReceiveSize(maximumBytes, sourceLocation);
+        try
+        {
+            ThrowIfDisposed(sourceLocation);
+            var buffer = GC.AllocateUninitializedArray<byte>(maximumBytes);
+            var count = await _client.GetStream().ReadAsync(buffer.AsMemory(), cancellation.Token).ConfigureAwait(false);
+            return new UTF8Encoding(false, true).GetString(buffer, 0, count);
+        }
+        catch (OperationCanceledException exception) when (cancellation.IsCancellationRequested)
+        {
+            throw new VelaCancellationException(sourceLocation, exception);
+        }
+        catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException or DecoderFallbackException)
+        {
+            throw new VelaNetworkException("TCP receive failed.", sourceLocation, exception);
+        }
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {
@@ -392,6 +460,22 @@ public sealed class TcpConnection : IDisposable
         if (_disposed)
         {
             throw new VelaNetworkException("TCP connection is closed.", sourceLocation);
+        }
+    }
+
+    private static void ValidateConnectionOptions(int port, int timeoutMilliseconds, string sourceLocation)
+    {
+        if (port is < 1 or > 65535 || timeoutMilliseconds is < 1 or > 120_000)
+        {
+            throw new VelaNetworkException("TCP port or timeout is outside the supported range.", sourceLocation);
+        }
+    }
+
+    private static void ValidateReceiveSize(int maximumBytes, string sourceLocation)
+    {
+        if (maximumBytes is < 1 or > 1_048_576)
+        {
+            throw new VelaNetworkException("TCP receive size must be between 1 and 1048576 bytes.", sourceLocation);
         }
     }
 }

@@ -57,7 +57,7 @@ internal static class VelaCommandLine
         }
 
         var imports = package is null ? [] : CreateCheckImports(package, BuildTargetResolver.Resolve(BuildTargetResolver.Auto).RuntimeIdentifier);
-        var compilation = Compile(input, imports);
+        var compilation = Compile(input, imports, package);
         renderer.PrintDiagnostics(compilation);
         if (compilation.HasErrors)
         {
@@ -76,18 +76,18 @@ internal static class VelaCommandLine
             return 2;
         }
 
-        if (package?.Root.Kind == VelaPackageKind.Library || options.BuildLibrary)
+        if (package?.Root.Kind is VelaPackageKind.Library or VelaPackageKind.SourceLibrary || options.BuildLibrary)
         {
-            return Fail(renderer, "The run command requires an application package, not a library.");
+            return Fail(renderer, "The run command requires an application package, not a library or source-library package.");
         }
 
         renderer.Status("Checking", input);
-        if (package is not null && package.Packages.Count > 1)
+        if (package is not null && package.Packages.Any(candidate => !ReferenceEquals(candidate, package.Root) && candidate.Kind == VelaPackageKind.Library))
         {
-            return Fail(renderer, "Run package dependencies with 'vela build' first, then execute the published native artifact.");
+            return Fail(renderer, "Run package dependencies with 'vela build' first when the package uses native libraries.");
         }
 
-        var compilation = Compile(input);
+        var compilation = Compile(input, [], package);
         renderer.PrintDiagnostics(compilation);
         if (compilation.HasErrors)
         {
@@ -126,6 +126,11 @@ internal static class VelaCommandLine
 
         var target = options.Target ?? BuildTargetResolver.Auto;
         var mode = options.Mode ?? ExecutableMode.NativeAot;
+        if (package?.Root.Kind == VelaPackageKind.SourceLibrary)
+        {
+            return Fail(renderer, "A source-library package is linked by an application and does not produce a standalone artifact.");
+        }
+
         var isLibrary = options.BuildLibrary || package?.Root.Kind == VelaPackageKind.Library;
         if (isLibrary && mode != ExecutableMode.NativeAot)
         {
@@ -185,7 +190,7 @@ internal static class VelaCommandLine
                 return 0;
             }
 
-            var compilation = Compile(input, imports);
+            var compilation = Compile(input, imports, package);
             renderer.PrintDiagnostics(compilation);
             if (compilation.HasErrors)
             {
@@ -264,8 +269,22 @@ internal static class VelaCommandLine
         return Path.Combine(root, "target", runtimeIdentifier, profile, name);
     }
 
-    private static VelaCompilation Compile(string inputPath, IReadOnlyList<VelaLibraryImport>? imports = null) =>
-        VelaCompiler.Compile(new SourceText(File.ReadAllText(inputPath), inputPath), imports ?? []);
+    private static VelaCompilation Compile(string inputPath, IReadOnlyList<VelaLibraryImport>? imports = null, VelaPackageGraph? package = null)
+    {
+        if (package is null)
+        {
+            return VelaCompiler.Compile(new SourceText(File.ReadAllText(inputPath), inputPath), imports ?? []);
+        }
+
+        var documents = package.BuildOrder
+            .Where(candidate => candidate.Kind == VelaPackageKind.SourceLibrary && !ReferenceEquals(candidate, package.Root))
+            .Select(candidate => new VelaSourceDocument(
+                new SourceText(File.ReadAllText(candidate.EntryPointPath), candidate.EntryPointPath),
+                candidate.Name))
+            .Append(new VelaSourceDocument(new SourceText(File.ReadAllText(inputPath), inputPath)))
+            .ToArray();
+        return VelaCompiler.Compile(documents, imports ?? []);
+    }
 
     private static List<VelaLibraryImport> CreateCheckImports(VelaPackageGraph package, string runtimeIdentifier)
     {
@@ -304,6 +323,11 @@ internal static class VelaCommandLine
         var imports = new List<VelaLibraryImport>();
         foreach (var dependency in package.Packages.Where(candidate => !ReferenceEquals(candidate, package.Root)))
         {
+            if (dependency.Kind == VelaPackageKind.SourceLibrary)
+            {
+                continue;
+            }
+
             if (dependency.Kind != VelaPackageKind.Library)
             {
                 throw new VelaPackageException($"Dependency '{dependency.Name}' is not a Vela library package.");
@@ -600,20 +624,21 @@ internal sealed class VelaConsoleRenderer
     {
         foreach (var diagnostic in compilation.Diagnostics.OrderBy(static diagnostic => diagnostic.Span.Start))
         {
-            var location = compilation.Source.GetLocation(diagnostic.Span);
-            var severity = diagnostic.Severity == DiagnosticSeverity.Error ? "red" : "yellow";
-            _console.MarkupLine($"[bold {severity}]{diagnostic.Severity.ToString().ToLowerInvariant()} {Markup.Escape(diagnostic.Code)}:[/] {Markup.Escape(diagnostic.Message)} [dim]at {Markup.Escape(location.FilePath)}:{location.Line}:{location.Column}[/]");
-            var sourceLine = compilation.Source.Text.Split(["\r\n", "\n"], StringSplitOptions.None).ElementAtOrDefault(location.Line - 1);
+            var mapped = compilation.MapDiagnostic(diagnostic);
+            var location = mapped.Source.GetLocation(mapped.Diagnostic.Span);
+            var severity = mapped.Diagnostic.Severity == DiagnosticSeverity.Error ? "red" : "yellow";
+            _console.MarkupLine($"[bold {severity}]{mapped.Diagnostic.Severity.ToString().ToLowerInvariant()} {Markup.Escape(mapped.Diagnostic.Code)}:[/] {Markup.Escape(mapped.Diagnostic.Message)} [dim]at {Markup.Escape(location.FilePath)}:{location.Line}:{location.Column}[/]");
+            var sourceLine = mapped.Source.Text.Split(["\r\n", "\n"], StringSplitOptions.None).ElementAtOrDefault(location.Line - 1);
             if (sourceLine is not null)
             {
                 _console.MarkupLine($"[dim]  |[/]");
                 _console.MarkupLine($"[dim]{location.Line,2} |[/] {Highlight(sourceLine)}");
-                _console.MarkupLine($"[dim]  |[/] [bold {severity}]{new string(' ', Math.Max(0, location.Column - 1))}^{new string('~', Math.Max(0, diagnostic.Span.Length - 1))}[/]");
+                _console.MarkupLine($"[dim]  |[/] [bold {severity}]{new string(' ', Math.Max(0, location.Column - 1))}^{new string('~', Math.Max(0, mapped.Diagnostic.Span.Length - 1))}[/]");
             }
 
-            if (!string.IsNullOrWhiteSpace(diagnostic.Help))
+            if (!string.IsNullOrWhiteSpace(mapped.Diagnostic.Help))
             {
-                _console.MarkupLine($"[dim]  = help:[/] {Markup.Escape(diagnostic.Help)}");
+                _console.MarkupLine($"[dim]  = help:[/] {Markup.Escape(mapped.Diagnostic.Help)}");
             }
         }
     }

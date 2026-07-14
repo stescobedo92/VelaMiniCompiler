@@ -1,0 +1,47 @@
+// A runnable combination of documentation comments, enum exhaustiveness,
+// async interfaces, try/catch/finally, and deterministic defer cleanup.
+
+/// Supplies a value asynchronously.
+interface ValueSource {
+    /// Loads the source value.
+    async fn load() -> Int;
+}
+
+/// Simple async implementation used by the example.
+class ConstantSource implements ValueSource {
+    async fn load() -> Int {
+        return 42;
+    }
+}
+
+/// Describes the result of the computation.
+enum Outcome {
+    Ready,
+    Failed
+}
+
+async fn main() -> Int {
+    defer print("deferred cleanup");
+    let source = ConstantSource();
+
+    try {
+        let value = await source.load();
+        let outcome: Outcome = Outcome.Ready;
+        switch outcome {
+            case Outcome.Ready {
+                print(value);
+                return 0;
+            }
+            case Outcome.Failed {
+                return 1;
+            }
+        }
+    }
+    catch VelaRuntimeException error {
+        print(error.message);
+        return 2;
+    }
+    finally {
+        print("finally");
+    }
+}

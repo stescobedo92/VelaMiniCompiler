@@ -12,7 +12,10 @@ public enum VelaPackageKind
     Application,
 
     /// <summary>Builds a Native AOT shared library from <c>src/lib.vela</c>.</summary>
-    Library
+    Library,
+
+    /// <summary>Links <c>src/lib.vela</c> directly into a consuming Vela application.</summary>
+    SourceLibrary
 }
 
 /// <summary>Declares one deterministic local package dependency.</summary>
@@ -28,7 +31,7 @@ public sealed record VelaPackageManifest(
     IReadOnlyList<VelaPackageDependency> Dependencies)
 {
     /// <summary>Gets the conventional Vela entry source path for this package.</summary>
-    public string EntryPointPath => Path.Combine(RootDirectory, "src", Kind == VelaPackageKind.Library ? "lib.vela" : "main.vela");
+    public string EntryPointPath => Path.Combine(RootDirectory, "src", Kind is VelaPackageKind.Library or VelaPackageKind.SourceLibrary ? "lib.vela" : "main.vela");
 }
 
 /// <summary>Represents a fully validated package graph with deterministic dependency ordering.</summary>
@@ -161,10 +164,10 @@ public sealed partial class VelaPackageResolver
 
         if (!values.TryGetValue("kind", out var kindText) || !TryParseKind(kindText, out var kind))
         {
-            throw new VelaPackageException($"{manifestPath}: [package].kind must be 'application' or 'library'.");
+            throw new VelaPackageException($"{manifestPath}: [package].kind must be 'application', 'library', or 'source-library'.");
         }
 
-        var entryPoint = Path.Combine(rootDirectory, "src", kind == VelaPackageKind.Library ? "lib.vela" : "main.vela");
+        var entryPoint = Path.Combine(rootDirectory, "src", kind is VelaPackageKind.Library or VelaPackageKind.SourceLibrary ? "lib.vela" : "main.vela");
         if (!File.Exists(entryPoint))
         {
             throw new VelaPackageException($"{manifestPath}: package '{name}' requires entry source '{entryPoint}'.");
@@ -230,7 +233,7 @@ public sealed partial class VelaPackageResolver
             .Select(package => new LockPackage(
                 package.Name,
                 package.Version,
-                package.Kind.ToString().ToLowerInvariant(),
+                FormatKind(package.Kind),
                 Path.GetRelativePath(graph.Root.RootDirectory, package.RootDirectory).Replace('\\', '/'),
                 HashManifest(package.ManifestPath)))
             .ToArray();
@@ -268,10 +271,19 @@ public sealed partial class VelaPackageResolver
         {
             "application" => VelaPackageKind.Application,
             "library" => VelaPackageKind.Library,
+            "source-library" => VelaPackageKind.SourceLibrary,
             _ => default
         };
-        return value is "application" or "library";
+        return value is "application" or "library" or "source-library";
     }
+
+    private static string FormatKind(VelaPackageKind kind) => kind switch
+    {
+        VelaPackageKind.Application => "application",
+        VelaPackageKind.Library => "library",
+        VelaPackageKind.SourceLibrary => "source-library",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind))
+    };
 
     private static void ValidatePackageName(string name, string manifestPath, int? lineNumber)
     {

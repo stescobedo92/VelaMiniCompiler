@@ -30,6 +30,7 @@ public sealed record VarStatementSyntax(
 public sealed record FunctionDeclarationSyntax(
     SyntaxToken? PublicKeyword,
     SyntaxToken? FfiKeyword,
+    SyntaxToken? AsyncKeyword,
     SyntaxToken FnKeyword,
     SyntaxToken Identifier,
     IReadOnlyList<GenericParameterSyntax> GenericParameters,
@@ -39,9 +40,10 @@ public sealed record FunctionDeclarationSyntax(
     SyntaxToken? ArrowToken,
     TypeSyntax? ReturnType,
     SyntaxToken LeftBrace,
-    BlockSyntax Body) : StatementSyntax
+    BlockSyntax Body,
+    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
 {
-    public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? FfiKeyword ?? FnKeyword).Span.Start, Body.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? FfiKeyword ?? AsyncKeyword ?? FnKeyword).Span.Start, Body.Span.End);
 }
 
 public sealed record ReturnStatementSyntax(
@@ -62,6 +64,42 @@ public sealed record AssertStatementSyntax(
     public override TextSpan Span => Message is null
         ? TextSpan.FromBounds(AssertKeyword.Span.Start, Condition.Span.End)
         : TextSpan.FromBounds(AssertKeyword.Span.Start, Message.Span.End);
+}
+
+/// <summary>Registers one call to run when its containing block exits.</summary>
+public sealed record DeferStatementSyntax(
+    SyntaxToken DeferKeyword,
+    ExpressionSyntax Invocation) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(DeferKeyword.Span.Start, Invocation.Span.End);
+}
+
+/// <summary>Protects a block with typed exception handlers and optional finalization.</summary>
+public sealed record TryStatementSyntax(
+    SyntaxToken TryKeyword,
+    BlockSyntax TryBlock,
+    IReadOnlyList<CatchClauseSyntax> Catches,
+    FinallyClauseSyntax? FinallyClause) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(TryKeyword.Span.Start, (FinallyClause?.Span ?? (Catches.Count == 0 ? TryBlock.Span : Catches[^1].Span)).End);
+}
+
+/// <summary>Handles one named Vela runtime exception type.</summary>
+public sealed record CatchClauseSyntax(
+    SyntaxToken CatchKeyword,
+    TypeSyntax ExceptionType,
+    SyntaxToken Identifier,
+    BlockSyntax Block) : SyntaxNode
+{
+    public override TextSpan Span => TextSpan.FromBounds(CatchKeyword.Span.Start, Block.Span.End);
+}
+
+/// <summary>Executes a block after protected execution completes.</summary>
+public sealed record FinallyClauseSyntax(
+    SyntaxToken FinallyKeyword,
+    BlockSyntax Block) : SyntaxNode
+{
+    public override TextSpan Span => TextSpan.FromBounds(FinallyKeyword.Span.Start, Block.Span.End);
 }
 
 public sealed record IfStatementSyntax(

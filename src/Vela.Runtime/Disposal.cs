@@ -138,3 +138,80 @@ public sealed class DisposalScope : IDisposable
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 }
+
+/// <summary>Runs compiler-registered deferred actions in last-in-first-out order.</summary>
+public sealed class VelaDeferScope
+{
+    private Action?[]? _actions;
+    private int _count;
+    private bool _completed;
+
+    /// <summary>Registers an action that must execute when the lexical Vela block exits.</summary>
+    public void Push(Action action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        if (_completed)
+        {
+            throw new InvalidOperationException("Cannot add a deferred action after its scope has completed.");
+        }
+
+        Action?[]? actions = _actions;
+        if (actions is null)
+        {
+            actions = new Action?[4];
+            _actions = actions;
+        }
+        else if (_count == actions.Length)
+        {
+            Array.Resize(ref actions, checked(actions.Length * 2));
+            _actions = actions;
+        }
+
+        actions[_count++] = action;
+    }
+
+    /// <summary>Runs every registered action and preserves a primary failure when cleanup also fails.</summary>
+    public void Run(Exception? primaryException)
+    {
+        if (_completed)
+        {
+            return;
+        }
+
+        _completed = true;
+        var actions = _actions;
+        var count = _count;
+        _actions = null;
+        _count = 0;
+
+        List<Exception>? cleanupFailures = null;
+        for (var index = count - 1; index >= 0; index--)
+        {
+            try
+            {
+                actions![index]!();
+            }
+            catch (Exception exception)
+            {
+                (cleanupFailures ??= []).Add(exception);
+            }
+        }
+
+        if (cleanupFailures is null)
+        {
+            return;
+        }
+
+        if (primaryException is not null)
+        {
+            throw new VelaCleanupException(primaryException, cleanupFailures);
+        }
+
+        if (cleanupFailures.Count == 1)
+        {
+            ExceptionDispatchInfo.Capture(cleanupFailures[0]).Throw();
+        }
+
+        throw new AggregateException("Multiple deferred actions failed during cleanup.", cleanupFailures);
+    }
+}

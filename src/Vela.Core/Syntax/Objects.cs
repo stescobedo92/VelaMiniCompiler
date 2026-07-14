@@ -22,7 +22,8 @@ public sealed record ObjectDeclarationSyntax(
     IReadOnlyList<TypeSyntax> ImplementedInterfaces,
     SyntaxToken LeftBrace,
     IReadOnlyList<ObjectMemberSyntax> Members,
-    SyntaxToken RightBrace) : StatementSyntax
+    SyntaxToken RightBrace,
+    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? Keyword).Span.Start, RightBrace.Span.End);
 }
@@ -35,7 +36,8 @@ public sealed record ObjectFieldSyntax(
     SyntaxToken? VarKeyword,
     SyntaxToken Identifier,
     SyntaxToken ColonToken,
-    TypeSyntax Type) : ObjectMemberSyntax
+    TypeSyntax Type,
+    DocumentationCommentSyntax? Documentation = null) : ObjectMemberSyntax
 {
     public bool IsMutable => VarKeyword is not null;
 
@@ -50,6 +52,7 @@ public sealed record ObjectMethodSyntax(FunctionDeclarationSyntax Function) : Ob
 
 /// <summary>Declares an interface method without an implementation body.</summary>
 public sealed record InterfaceMethodSyntax(
+    SyntaxToken? AsyncKeyword,
     SyntaxToken FnKeyword,
     SyntaxToken Identifier,
     IReadOnlyList<GenericParameterSyntax> GenericParameters,
@@ -57,7 +60,8 @@ public sealed record InterfaceMethodSyntax(
     IReadOnlyList<ParameterSyntax> Parameters,
     SyntaxToken RightParenthesis,
     SyntaxToken? ArrowToken,
-    TypeSyntax? ReturnType) : ObjectMemberSyntax
+    TypeSyntax? ReturnType,
+    DocumentationCommentSyntax? Documentation = null) : ObjectMemberSyntax
 {
-    public override TextSpan Span => TextSpan.FromBounds(FnKeyword.Span.Start, ReturnType?.Span.End ?? RightParenthesis.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds((AsyncKeyword ?? FnKeyword).Span.Start, ReturnType?.Span.End ?? RightParenthesis.Span.End);
 }

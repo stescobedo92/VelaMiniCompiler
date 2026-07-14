@@ -1,0 +1,28 @@
+// Small deterministic logging helpers with JSON canonicalization delegated to vela.core.json.
+include vela.core.time as time;
+include vela.core.json as json;
+
+/// Writes an informational message.
+/// @param message Message to write.
+fn log_info(message: Text) -> Unit {
+    print("[info] " + message);
+}
+
+/// Writes a warning message.
+/// @param message Message to write.
+fn log_warn(message: Text) -> Unit {
+    print("[warn] " + message);
+}
+
+/// Writes a compact JSON event using the shared core JSON implementation.
+/// @param payload JSON payload to canonicalize.
+fn log_json(payload: Text) -> Unit {
+    print(json.compact(payload));
+}
+
+/// Writes an informational message with a monotonic timestamp.
+/// @param message Message to write.
+fn log_timed(message: Text) -> Unit {
+    print(time.utc_unix_milliseconds());
+    print("[info] " + message);
+}

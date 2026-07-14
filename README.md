@@ -24,9 +24,10 @@ statements.
   mutable `var`, records, generics, arrays, nullable values, boxing, and checked
   unboxing are available in the current language surface.
 - **Local, reproducible packages.** A `vela.toml` graph resolves deterministic
-  local dependencies and records their manifest hashes in `vela.lock`. A library
-  exports an explicit ABI manifest, so an application validates symbols and types
-  before generating native imports.
+  local dependencies and records their manifest hashes in `vela.lock`.
+  `source-library` packages are linked as Vela source (so they retain classes,
+  enums, generics, and `Option<T>`), while `library` packages export a native ABI
+  manifest for scalar cross-process calls.
 - **Clear builds and diagnostics.** The CLI uses color-aware terminal output,
   shows every compiler phase by default, supports `--quiet`, and exposes raw
   Native AOT publishing output with `-vv`.
@@ -35,15 +36,25 @@ statements.
 
 - Types: `Int`, `UInt`, `Long`, `Float`, `Double`, `Decimal`, `Bool`, `Text`
   (`String` alias), `Any`, `Array<T>`, `Option<T>`, `Result<T, E>`, and generic
-  collection types. There is intentionally no `UFloat` type.
+  collection types, plus `Future<T>` and `Cancellation` for asynchronous work.
+  There is intentionally no `UFloat` type.
 - Checked conversions such as `Int(value)`, `UInt(value)`, `Long(value)`,
   `Float(value)`, `Double(value)`, and `Decimal(value)`.
 - Brace-based `if`/`else`, `for`, `while`, `break`, `continue`, and literal
-  `switch` cases with no fall-through.
+  `switch` cases with no fall-through. Strongly typed `enum` values require an
+  exhaustive `switch` unless a `default` branch is present.
+- Comments for editor tooling: `//`, nested `/* ... */`, `///`, and `/** ... */`.
+  Documentation is preserved with exact spans and validates `@param` and
+  `@returns` where applicable.
+- Deterministic `defer` with lexical scope, last-in-first-out execution, and
+  argument snapshots. `try`/`catch`/`finally` handles source-aware Vela runtime
+  exceptions and exposes `error.message` plus `error.source_location`.
+- `async fn`, `await`, `Future<T>`, and explicit `Cancellation`. Async TCP keeps
+  sync programs unchanged and emits .NET async state machines only when used.
 - `include vela.core;` for the core surface and `include package.name as alias;`
-  for manifest-declared native package dependencies.
+  for manifest-declared native or source-linked package dependencies.
 - Explicit, Native-AOT-trimmed core modules: `json`, `crypto`, `tcp`, `text`,
-  `math`, `time`, `random`, `io`, `encoding`, and `env`.
+  `math`, `time`, `random`, `io`, `encoding`, `env`, and `vela.concurrent`.
 - `public ffi fn` exports scalar native ABI functions. Cross-package calls
   currently support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Unit`;
   `Text` and `Decimal` are emitted as library ABI values but are not yet accepted
@@ -123,6 +134,29 @@ dotnet run --project .\src\Vela.Cli -- build .\examples\packages\vela-app `
 The final command prints `42` on Windows. The equivalent executable name is
 selected automatically on Linux and macOS.
 
+Run a source-linked standard-library package application. No DLL/SO is produced
+for these dependencies: Vela links only the required source and Native AOT trims
+the result.
+
+```powershell
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-std-app
+```
+
+The example uses `vela.std.cli`, `vela.std.config`, `vela.std.log`, and
+`vela.std.test`. `vela.std.config` and `vela.std.log` route all JSON work through
+the one `vela.core.json` implementation; they do not contain another parser.
+
+Check the async plaintext HTTP example without contacting a remote endpoint:
+
+```powershell
+dotnet run --project .\src\Vela.Cli -- check .\examples\packages\vela-http-app
+```
+
+`vela.std.http` is an opt-in, bounded HTTP/1.1-over-TCP helper. Its first
+version intentionally supports trusted plaintext endpoints only; TLS, redirects,
+headers, and streaming remain later work so minimal applications keep their
+small runtime footprint.
+
 Try the progressive examples:
 
 ```powershell
@@ -130,7 +164,9 @@ dotnet run --project .\src\Vela.Cli -- run .\examples\control-flow.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\core-text-math.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\secure-message.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\file-json-report.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\language-foundations.vela
 dotnet run --project .\src\Vela.Cli -- check .\examples\tcp-echo-client.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-std-app
 ```
 
 `tcp-echo-client.vela` is intentionally only checked by default; execute it

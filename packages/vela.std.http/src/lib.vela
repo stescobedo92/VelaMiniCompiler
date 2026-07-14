@@ -1,0 +1,25 @@
+// Bounded plaintext HTTP/1.1 helpers written in Vela over the asynchronous core TCP API.
+include vela.core.tcp as tcp;
+include vela.core.json as json;
+
+/// Performs a bounded plaintext HTTP/1.1 GET request.
+/// @param host Remote host name.
+/// @param port Remote plaintext HTTP port.
+/// @param path Absolute request path.
+/// @param cancellation Cooperative cancellation handle.
+/// @returns The raw HTTP response bytes decoded as UTF-8 text.
+/// @throws VelaNetworkException When the TCP request fails.
+/// @throws VelaCancellationException When cancellation is requested.
+async fn http_get(host: Text, port: Int, path: Text, cancellation: Cancellation) -> Text {
+    let connection = await tcp.connect_async(host, port, 5000, cancellation);
+    defer tcp.close(connection);
+    let request = "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
+    await tcp.send_text_async(connection, request, cancellation);
+    return await tcp.receive_text_async(connection, 1048576, cancellation);
+}
+
+/// Canonicalizes a JSON response body through the sole core JSON implementation.
+/// @param payload JSON payload body extracted by the caller.
+fn http_compact_json(payload: Text) -> Text {
+    return json.compact(payload);
+}

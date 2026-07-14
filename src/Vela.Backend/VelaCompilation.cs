@@ -9,7 +9,15 @@ public sealed record VelaCompilation(
     SourceText Source,
     ParseResult ParseResult,
     IReadOnlyList<Diagnostic> Diagnostics,
-    string? GeneratedSource)
+    string? GeneratedSource,
+    VelaSourceBundle? SourceBundle = null)
 {
     public bool HasErrors => Diagnostics.Any(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+    /// <summary>Gets a diagnostic with the physical source document that owns its location.</summary>
+    public VelaMappedDiagnostic MapDiagnostic(Diagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        return SourceBundle?.MapDiagnostic(diagnostic) ?? new VelaMappedDiagnostic(Source, diagnostic);
+    }
 }

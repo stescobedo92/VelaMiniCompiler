@@ -1,4 +1,5 @@
 using Vela.Core.Diagnostics;
+using Vela.Core.Lexing;
 using Vela.Core.Parsing;
 using Vela.Core.Source;
 using Vela.Core.Syntax;
@@ -213,5 +214,100 @@ public sealed class VelaParserTests
         var result = VelaParser.Parse(new SourceText(code, "duplicate-default.vela"));
 
         Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "P008");
+    }
+
+    [Fact]
+    public void LexerPreservesNestedAndDocumentationCommentsWithoutChangingGrammarTokens()
+    {
+        const string code = "/* outer /* inner */ outer */\n/// Adds two values.\n/// @param left First value.\nfn add(left: Int, right: Int) -> Int { return left + right; }\n";
+
+        var result = new VelaLexer(new SourceText(code, "comments.vela")).Lex();
+
+        Assert.Empty(result.Diagnostics);
+        Assert.Equal(3, result.Trivia.Count);
+        Assert.Equal(SyntaxTriviaKind.BlockComment, result.Trivia[0].Kind);
+        Assert.All(result.Trivia.Skip(1), static trivia => Assert.True(trivia.IsDocumentation));
+        Assert.DoesNotContain(result.Tokens, static token => token.Text.Contains("Adds", StringComparison.Ordinal));
+
+        var parsed = VelaParser.Parse(new SourceText(code, "comments.vela"));
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(parsed.Root.Members));
+        Assert.NotNull(function.Documentation);
+        Assert.Contains("Adds two values.", function.Documentation!.Text, StringComparison.Ordinal);
+        Assert.Empty(parsed.Diagnostics);
+    }
+
+    [Fact]
+    public void ParseDocumentationAndEnumsAttachMetadataAndValidateKnownTags()
+    {
+        const string code = "/// @param missing Not a declared argument.\nfn run(value: Int) -> Unit { return; }\n\n/** A lifecycle. */\nenum State { /// Ready state.\nReady,\nRunning;\n}\n";
+
+        var result = VelaParser.Parse(new SourceText(code, "enum-docs.vela"));
+
+        var function = Assert.IsType<FunctionDeclarationSyntax>(result.Root.Members[0]);
+        var declaration = Assert.IsType<EnumDeclarationSyntax>(result.Root.Members[1]);
+        Assert.NotNull(function.Documentation);
+        Assert.Equal("A lifecycle.", declaration.Documentation!.Text);
+        Assert.NotNull(declaration.Members[0].Documentation);
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "DOC002");
+        Assert.DoesNotContain(result.Diagnostics, static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
+    public void ParseUnterminatedBlockCommentReportsLexerDiagnostic()
+    {
+        var result = VelaParser.Parse(new SourceText("/* never closes", "unterminated-comment.vela"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "L009");
+    }
+
+    [Fact]
+    public void ParseDeferAndTypedTryCatchFinallyCapturesBlockStructure()
+    {
+        const string code = """
+            fn main() -> Int {
+                defer cleanup(1);
+                try {
+                    return 0;
+                }
+                catch VelaIoException error {
+                    print(error.message);
+                    return 1;
+                }
+                finally {
+                    print("finished");
+                }
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "exceptions.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        var defer = Assert.IsType<DeferStatementSyntax>(function.Body.Statements[0]);
+        Assert.IsType<CallExpressionSyntax>(defer.Invocation);
+        var protectedStatement = Assert.IsType<TryStatementSyntax>(function.Body.Statements[1]);
+        var handler = Assert.Single(protectedStatement.Catches);
+        Assert.Equal("VelaIoException", Assert.IsType<NamedTypeSyntax>(handler.ExceptionType).Identifier.Text);
+        Assert.Equal("error", handler.Identifier.Text);
+        Assert.NotNull(protectedStatement.FinallyClause);
+    }
+
+    [Fact]
+    public void ParseAsyncFunctionAndAwaitCapturesFutureSyntax()
+    {
+        const string code = """
+            async fn load() -> Int {
+                let value = await fetch();
+                return value;
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "async.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        Assert.NotNull(function.AsyncKeyword);
+        var variable = Assert.IsType<LetStatementSyntax>(function.Body.Statements[0]);
+        Assert.IsType<AwaitExpressionSyntax>(variable.Initializer);
     }
 }

@@ -2,7 +2,11 @@
 
 ## Status
 
-Proposed design. This document requires user review before implementation.
+Implemented baseline. The approved design is now represented by documentation
+trivia, enum exhaustiveness, `defer`, typed exception handling, source-linked
+packages, async/await, explicit cancellation, async TCP, and the initial
+`vela.std` packages. A future LSP/editor extension remains deliberately out of
+scope; the compiler now preserves the metadata it will consume.
 
 ## Purpose
 
@@ -252,11 +256,11 @@ native dependency:
 | `vela.std.config` | profiles, environment overlays, JSON configuration | `env`, `io`, `json` |
 | `vela.std.test` | assertions, fixtures, parameterized tests | `text`, `time` |
 
-After async support:
+After async support (implemented first baseline):
 
 | Package | Responsibility | Core dependencies |
 | --- | --- | --- |
-| `vela.std.http` | bounded HTTP client, headers, JSON helpers | `json`, `crypto`, `encoding`, `time` |
+| `vela.std.http` | bounded plaintext HTTP/1.1 GET helper and JSON canonicalization | `tcp`, `json` |
 | `vela.concurrent` | cancellation, channels, worker coordination | `time` |
 
 Later optional packages are `vela.data.sqlite`, `vela.std.web`,

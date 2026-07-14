@@ -38,6 +38,39 @@ public sealed class DisposalTests
         Assert.Equal(["third", "second", "first"], disposalOrder);
     }
 
+    [Fact]
+    public void VelaDeferScope_RunsEveryActionInReverseOrderAndPreservesPrimaryFailure()
+    {
+        var order = new List<string>();
+        var scope = new VelaDeferScope();
+        scope.Push(() => order.Add("first"));
+        scope.Push(() =>
+        {
+            order.Add("second");
+            throw new InvalidOperationException("cleanup failed");
+        });
+
+        var primary = new VelaIoException("read failed", "test:1:1");
+        var exception = Assert.Throws<VelaCleanupException>(() => scope.Run(primary));
+
+        Assert.Equal(["second", "first"], order);
+        Assert.Same(primary, exception.PrimaryException);
+        Assert.Single(exception.CleanupExceptions);
+        Assert.Equal("cleanup failed", exception.CleanupExceptions[0].Message);
+    }
+
+    [Fact]
+    public void VelaCancellation_Cancel_ExposesCooperativeCancellationState()
+    {
+        using var cancellation = VelaCancellation.Create();
+
+        Assert.False(cancellation.IsCancellationRequested);
+        cancellation.Cancel();
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.True(cancellation.Token.IsCancellationRequested);
+    }
+
     private sealed class RecordingDisposable(string name, List<string> disposalOrder, bool shouldThrow = false) : IDisposable
     {
         public void Dispose()

@@ -1,0 +1,31 @@
+// Lightweight test assertions for Vela applications and package fixtures.
+include vela.core.time as time;
+
+/// Fails when two integer values differ.
+/// @param expected Expected value.
+/// @param actual Actual value.
+/// @param name Test name included in diagnostics.
+fn test_equal_int(expected: Int, actual: Int, name: Text) -> Unit {
+    assert expected == actual, name;
+}
+
+/// Fails when two text values differ.
+/// @param expected Expected value.
+/// @param actual Actual value.
+/// @param name Test name included in diagnostics.
+fn test_equal_text(expected: Text, actual: Text, name: Text) -> Unit {
+    assert expected == actual, name;
+}
+
+/// Returns a monotonic timestamp for caller-owned performance measurements.
+fn test_start_timer() -> Long {
+    return time.monotonic_ticks();
+}
+
+/// Validates a non-negative elapsed duration.
+/// @param start Start value returned by test_start_timer.
+/// @param end Current timestamp.
+/// @param name Test name included in diagnostics.
+fn test_assert_elapsed(start: Long, end: Long, name: Text) -> Unit {
+    assert end >= start, name;
+}

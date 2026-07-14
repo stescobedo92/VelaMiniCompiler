@@ -93,6 +93,81 @@ switch index {
 
 Switch subjects and literal cases support `Int`, `UInt`, `Long`, `Bool`, and
 `Text`. The compiler rejects duplicate case values and multiple `default` blocks.
+`enum` values are strongly typed and require an exhaustive switch when no
+`default` branch is present:
+
+```vela
+enum State { Ready, Running, Failed }
+
+fn exit_code(state: State) -> Int {
+    switch state {
+        case State.Ready { return 0; }
+        case State.Running { return 1; }
+        case State.Failed { return 2; }
+    }
+}
+```
+
+## Comments, documentation, cleanup, and exceptions
+
+Vela accepts regular line comments (`//`) and nested block comments
+(`/* ... */`). Documentation comments (`///` and `/** ... */`) attach to the
+next declaration when separated only by whitespace. They preserve source spans
+for future editor tooling and support `@param`, `@returns`, `@throws`,
+`@example`, and `@deprecated` tags.
+
+`defer` evaluates its call target and arguments immediately, then executes the
+call in last-in-first-out order when its lexical block exits. It runs for normal
+completion, `return`, loop control, and exceptions.
+
+```vela
+include vela.core.tcp as tcp;
+
+fn send(payload: Text) -> Int {
+    let connection = tcp.connect("127.0.0.1", 7007, 1000);
+    defer tcp.close(connection);
+    tcp.send_text(connection, payload);
+    return 0;
+}
+```
+
+Use typed handlers for predictable runtime failures. Handlers must be ordered
+from specific to general; caught errors expose `message` and
+`source_location`.
+
+```vela
+include vela.core.io as io;
+
+try {
+    let payload = io.read_text("config.json");
+    print(payload);
+}
+catch VelaIoException error {
+    print(error.message);
+}
+finally {
+    print("configuration read completed");
+}
+```
+
+## Async functions and cancellation
+
+`async fn` declares its eventual result type, while callers observe a
+`Future<T>`. `await` is legal only within an async function. `Cancellation` is
+created explicitly through `vela.concurrent` and passed to asynchronous I/O.
+
+```vela
+include vela.core.tcp as tcp;
+include vela.concurrent as concurrent;
+
+async fn fetch() -> Text {
+    let cancellation = concurrent.create();
+    let connection = await tcp.connect_async("127.0.0.1", 8080, 1000, cancellation);
+    defer tcp.close(connection);
+    await tcp.send_text_async(connection, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", cancellation);
+    return await tcp.receive_text_async(connection, 4096, cancellation);
+}
+```
 
 ## Classes, structs, interfaces, records, and generics
 
@@ -142,7 +217,7 @@ Assignments to `Any` box value types. `unbox<T>` validates the exact Vela type
 and fails with `VelaInvalidCastException`; `try_unbox<T>` returns `T?` instead.
 All array access is bounds-checked.
 
-## Packages and native libraries
+## Packages, source libraries, and native libraries
 
 A package has a deterministic `vela.toml` and an optional local dependency list.
 
@@ -174,6 +249,19 @@ fn main() -> Int {
 decimal, objects, arrays, and collections are intentionally not passed across
 the ABI boundary yet.
 
+Use `kind = "source-library"` for Vela libraries that expose rich Vela types.
+The compiler links their `src/lib.vela` source into the consuming application,
+preserves source locations, and emits no dependency DLL/SO. APIs are called
+through the import alias; a source package named `vela.std.config` exports
+`config_get_text` as `config.get_text(...)`.
+
+```toml
+[package]
+name = "vela.std.config"
+version = "0.1.0"
+kind = "source-library"
+```
+
 ## Explicit core modules
 
 Core modules are opt-in imports and are trimmed from programs that do not call
@@ -191,6 +279,7 @@ them. Their aliases default to the final module name.
 | `vela.core.io` | UTF-8 file existence, read, write, append |
 | `vela.core.encoding` | UTF-8 byte count, hexadecimal and Base64 conversion |
 | `vela.core.env` | environment variables, process arguments, current directory |
+| `vela.concurrent` | explicit cancellation creation, request, and state |
 
 ```vela
 include vela.core.json;
@@ -205,8 +294,8 @@ fn main() -> Int {
 ```
 
 Network and file failures are reported as source-aware Vela runtime exceptions.
-TCP is deliberately synchronous in this release and should be used with a
-bounded timeout and receive size.
+TCP offers bounded synchronous calls plus `connect_async`, `send_text_async`,
+and `receive_text_async`; async operations require a `Cancellation` handle.
 
 ## Diagnostics and build output
 

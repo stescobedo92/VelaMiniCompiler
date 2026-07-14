@@ -15,6 +15,7 @@ public sealed class VelaType
     public static readonly VelaType Text = new("Text");
     public static readonly VelaType Any = new("Any");
     public static readonly VelaType TcpConnection = new("TcpConnection");
+    public static readonly VelaType Cancellation = new("Cancellation");
     public static readonly VelaType Unit = new("Unit");
     public static readonly VelaType Nil = new("Nil");
 #pragma warning restore CA1720
@@ -41,6 +42,8 @@ public sealed class VelaType
     public bool IsNumeric => Name is "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal";
 
     public bool IsOptional => Name == "Option" && TypeArguments.Count == 1;
+
+    public bool IsFuture => Name == "Future" && TypeArguments.Count == 1;
 
     public bool IsSameAs(VelaType other)
     {
