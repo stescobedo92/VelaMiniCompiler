@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension">
+  <Bundle Name="Vela Compiler"
+          Version="$(var.Version)"
+          Manufacturer="Vela"
+          UpgradeCode="E69A3953-0BCF-4CA5-9CD4-7F542E84BBCD">
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.HyperlinkLicense">
+      <bal:WixStandardBootstrapperApplication LicenseUrl="" />
+    </BootstrapperApplicationRef>
+
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiPath)"
+                  Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

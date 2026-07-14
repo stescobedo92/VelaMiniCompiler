@@ -67,10 +67,11 @@ public sealed record VelaAbiManifest(
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(path, JsonSerializer.Serialize(this, SerializerOptions) + Environment.NewLine, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.WriteAllText(
+            path,
+            JsonSerializer.Serialize(this, VelaJsonSerializerContext.Default.VelaAbiManifest) + Environment.NewLine,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
-
-    private static readonly JsonSerializerOptions SerializerOptions = new() { WriteIndented = true };
 }
 
 /// <summary>Represents generated C# and exports for a Vela shared-library package.</summary>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="Vela Compiler"
+           Language="1033"
+           Version="$(var.Version)"
+           Manufacturer="Vela"
+           UpgradeCode="B6F5F9F7-4FE4-4B3B-B63D-3C356AC6D2E9">
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Platform="x64"
+             Description="Vela compiler and command-line tools" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Vela Compiler is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Vela">
+          <Component Id="VelaCompilerComponent" Guid="*" Win64="yes">
+            <File Id="VelaCompiler" Source="$(var.SourceDir)\vela.exe" KeyPath="yes" />
+            <Environment Id="VelaPath"
+                         Name="PATH"
+                         Value="[INSTALLFOLDER]"
+                         Part="last"
+                         Action="set"
+                         System="yes"
+                         Permanent="no" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="VelaCompiler" Title="Vela Compiler" Level="1">
+      <ComponentRef Id="VelaCompilerComponent" />
+    </Feature>
+  </Product>
+</Wix>

@@ -53,7 +53,6 @@ public sealed partial class VelaPackageResolver
     private static readonly Regex PackageNamePattern = PackageNameRegex();
     private static readonly Regex KeyValuePattern = KeyValueRegex();
     private static readonly Regex DependencyPattern = DependencyRegex();
-    private static readonly JsonSerializerOptions LockFileSerializerOptions = new() { WriteIndented = true };
 
     /// <summary>Resolves a package directory or an explicit manifest path.</summary>
     public static VelaPackageGraph Resolve(string packagePath, bool writeLockFile = true)
@@ -230,14 +229,16 @@ public sealed partial class VelaPackageResolver
         var entries = graph.Packages
             .OrderBy(static package => package.Name, StringComparer.Ordinal)
             .ThenBy(static package => package.RootDirectory, StringComparer.Ordinal)
-            .Select(package => new LockPackage(
+            .Select(package => new VelaPackageLockPackage(
                 package.Name,
                 package.Version,
                 FormatKind(package.Kind),
                 Path.GetRelativePath(graph.Root.RootDirectory, package.RootDirectory).Replace('\\', '/'),
                 HashManifest(package.ManifestPath)))
             .ToArray();
-        var content = JsonSerializer.Serialize(new LockDocument(1, entries), LockFileSerializerOptions) + Environment.NewLine;
+        var content = JsonSerializer.Serialize(
+            new VelaPackageLockDocument(1, entries),
+            VelaJsonSerializerContext.Default.VelaPackageLockDocument) + Environment.NewLine;
         File.WriteAllText(graph.LockFilePath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
@@ -309,7 +310,10 @@ public sealed partial class VelaPackageResolver
         Visited
     }
 
-    private sealed record LockDocument(int LockVersion, IReadOnlyList<LockPackage> Packages);
-
-    private sealed record LockPackage(string Name, string Version, string Kind, string Path, string ManifestHash);
 }
+
+/// <summary>Represents the stable JSON shape written to a package lock file.</summary>
+internal sealed record VelaPackageLockDocument(int LockVersion, IReadOnlyList<VelaPackageLockPackage> Packages);
+
+/// <summary>Represents one package entry in a package lock file.</summary>
+internal sealed record VelaPackageLockPackage(string Name, string Version, string Kind, string Path, string ManifestHash);
