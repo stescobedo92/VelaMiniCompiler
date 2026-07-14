@@ -23,6 +23,15 @@ public sealed record MemberAccessExpressionSyntax(
     public override TextSpan Span => TextSpan.FromBounds(Receiver.Span.Start, Member.Span.End);
 }
 
+public sealed record IndexExpressionSyntax(
+    ExpressionSyntax Receiver,
+    SyntaxToken LeftBracket,
+    ExpressionSyntax Index,
+    SyntaxToken RightBracket) : ExpressionSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(Receiver.Span.Start, RightBracket.Span.End);
+}
+
 public sealed record UnaryExpressionSyntax(
     SyntaxToken OperatorToken,
     ExpressionSyntax Operand) : ExpressionSyntax

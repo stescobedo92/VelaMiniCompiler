@@ -12,14 +12,13 @@ public enum ExecutableMode
 public sealed record BuildOptions(
     string ApplicationName,
     string OutputDirectory,
-    string RuntimeIdentifier = "win-x64",
+    string RuntimeIdentifier = BuildTargetResolver.Auto,
     ExecutableMode Mode = ExecutableMode.NativeAot);
 
 /// <summary>Describes the files and command output produced by a Vela build.</summary>
 public sealed record BuildResult(
     bool Succeeded,
-    string SourceDirectory,
-    string ProjectPath,
-    string PublishDirectory,
+    string RuntimeIdentifier,
+    string? ExecutablePath,
     string StandardOutput,
     string StandardError);

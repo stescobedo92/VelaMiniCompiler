@@ -206,6 +206,8 @@ public sealed class VelaLexer
             "assert" => TokenKind.AssertKeyword,
             "if" => TokenKind.IfKeyword,
             "else" => TokenKind.ElseKeyword,
+            "for" => TokenKind.ForKeyword,
+            "in" => TokenKind.InKeyword,
             "true" => TokenKind.TrueKeyword,
             "false" => TokenKind.FalseKeyword,
             "nil" => TokenKind.NilKeyword,

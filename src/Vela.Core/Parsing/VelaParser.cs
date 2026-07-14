@@ -61,6 +61,7 @@ public sealed class VelaParser
         TokenKind.ReturnKeyword => ParseReturnStatement(),
         TokenKind.AssertKeyword => ParseAssertStatement(),
         TokenKind.IfKeyword => ParseIfStatement(),
+        TokenKind.ForKeyword => ParseForStatement(),
         _ => ParseExpressionStatement()
     };
 
@@ -217,6 +218,17 @@ public sealed class VelaParser
         return new IfStatementSyntax(keyword, condition, colon, thenBlock, elseClause);
     }
 
+    private ForStatementSyntax ParseForStatement()
+    {
+        var keyword = Match(TokenKind.ForKeyword);
+        var identifier = Match(TokenKind.Identifier);
+        var inKeyword = Match(TokenKind.InKeyword);
+        var collection = ParseExpression();
+        var colon = Match(TokenKind.Colon);
+        var body = ParseBlock();
+        return new ForStatementSyntax(keyword, identifier, inKeyword, collection, colon, body);
+    }
+
     private ExpressionStatementSyntax ParseExpressionStatement()
     {
         var expression = ParseExpression();
@@ -366,13 +378,13 @@ public sealed class VelaParser
 
         var equals = NextToken();
         var value = ParseAssignmentExpression();
-        if (target is not NameExpressionSyntax)
+        if (target is not NameExpressionSyntax and not IndexExpressionSyntax)
         {
             _diagnostics.ReportError(
                 "P006",
                 target.Span,
-                "The left side of an assignment must be a variable name.",
-                "Assign to a name declared with 'var'.");
+                "The left side of an assignment must be a variable name or an indexed collection.",
+                "Assign to a name declared with 'var' or an indexed collection element.");
         }
 
         return new AssignmentExpressionSyntax(target, equals, value);
@@ -412,13 +424,22 @@ public sealed class VelaParser
     private ExpressionSyntax ParsePostfixExpression()
     {
         var expression = ParsePrimaryExpression();
-        while (Current.Kind == TokenKind.LeftParen || Current.Kind == TokenKind.Dot || CanParseGenericCall())
+        while (Current.Kind == TokenKind.LeftParen || Current.Kind == TokenKind.LeftBracket || Current.Kind == TokenKind.Dot || CanParseGenericCall())
         {
             if (Current.Kind == TokenKind.Dot)
             {
                 var dot = NextToken();
                 var member = Match(TokenKind.Identifier);
                 expression = new MemberAccessExpressionSyntax(expression, dot, member);
+                continue;
+            }
+
+            if (Current.Kind == TokenKind.LeftBracket)
+            {
+                var leftBracket = NextToken();
+                var index = ParseExpression();
+                var rightBracket = Match(TokenKind.RightBracket);
+                expression = new IndexExpressionSyntax(expression, leftBracket, index, rightBracket);
                 continue;
             }
 

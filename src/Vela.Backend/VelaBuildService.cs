@@ -27,41 +27,35 @@ public sealed class VelaBuildService
             throw new InvalidOperationException("Cannot build source that contains compiler errors.");
         }
 
-        var layout = WriteSourceProject(compilation, options);
-        var arguments = new List<string>
-        {
-            "publish",
-            layout.ProjectPath,
-            "--configuration", "Release",
-            "--runtime", options.RuntimeIdentifier,
-            "--output", layout.PublishDirectory,
-            "--nologo"
-        };
+        var target = BuildTargetResolver.Resolve(options.RuntimeIdentifier);
+        var stagingDirectory = Path.Combine(Path.GetTempPath(), "vela", "publish", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(stagingDirectory);
 
-        switch (options.Mode)
+        try
         {
-            case ExecutableMode.NativeAot:
-                arguments.AddRange(["--self-contained", "true", "-p:PublishAot=true", "-p:InvariantGlobalization=true"]);
-                break;
-            case ExecutableMode.SingleFile:
-                arguments.AddRange(["--self-contained", "true", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true"]);
-                break;
-            case ExecutableMode.FrameworkDependent:
-                arguments.Add("--self-contained");
-                arguments.Add("false");
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(options));
+            var layout = WriteSourceProject(compilation, options with { OutputDirectory = stagingDirectory, RuntimeIdentifier = target.RuntimeIdentifier });
+            var arguments = CreatePublishArguments(layout, target.RuntimeIdentifier, options.Mode);
+            var process = await RunDotnetAsync(arguments, layout.SourceDirectory, cancellationToken);
+            if (process.ExitCode != 0)
+            {
+                return new BuildResult(false, target.RuntimeIdentifier, null, process.StandardOutput, process.StandardError);
+            }
+
+            var applicationName = SanitizeApplicationName(options.ApplicationName);
+            var executablePath = FindPrimaryExecutable(layout.PublishDirectory, applicationName);
+            if (executablePath is null)
+            {
+                var message = $"The publish output did not contain the expected executable '{applicationName}' or '{applicationName}.exe'.";
+                return new BuildResult(false, target.RuntimeIdentifier, null, process.StandardOutput, AppendError(process.StandardError, message));
+            }
+
+            var finalExecutable = CommitPublishedArtifacts(layout.PublishDirectory, executablePath, options.OutputDirectory);
+            return new BuildResult(true, target.RuntimeIdentifier, finalExecutable, process.StandardOutput, process.StandardError);
         }
-
-        var process = await RunDotnetAsync(arguments, layout.SourceDirectory, cancellationToken);
-        return new BuildResult(
-            process.ExitCode == 0,
-            layout.SourceDirectory,
-            layout.ProjectPath,
-            layout.PublishDirectory,
-            process.StandardOutput,
-            process.StandardError);
+        finally
+        {
+            TryDeleteDirectory(stagingDirectory);
+        }
     }
 
     public GeneratedProject WriteSourceProject(VelaCompilation compilation, BuildOptions options)
@@ -93,6 +87,28 @@ public sealed class VelaBuildService
         return await RunDotnetAsync(["run", "--configuration", "Release", "--project", project.ProjectPath, "--nologo"], project.SourceDirectory, cancellationToken);
     }
 
+    /// <summary>Finds the executable produced for an application without inferring an extension from a RID.</summary>
+    public static string? FindPrimaryExecutable(string publishDirectory, string applicationName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(publishDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(applicationName);
+
+        var sanitizedName = SanitizeApplicationName(applicationName);
+        foreach (var candidate in new[]
+        {
+            Path.Combine(publishDirectory, sanitizedName + ".exe"),
+            Path.Combine(publishDirectory, sanitizedName)
+        })
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
     private string CreateProjectFile(string applicationName)
     {
         var escapedRuntimePath = SecurityElement.Escape(_runtimeProjectPath) ?? throw new InvalidOperationException("Unable to escape the runtime project path.");
@@ -114,6 +130,124 @@ public sealed class VelaBuildService
                  </ItemGroup>
                </Project>
                """;
+    }
+
+    private static List<string> CreatePublishArguments(GeneratedProject layout, string runtimeIdentifier, ExecutableMode mode)
+    {
+        var arguments = new List<string>
+        {
+            "publish",
+            layout.ProjectPath,
+            "--configuration", "Release",
+            "--runtime", runtimeIdentifier,
+            "--output", layout.PublishDirectory,
+            "--nologo"
+        };
+
+        switch (mode)
+        {
+            case ExecutableMode.NativeAot:
+                arguments.AddRange(["--self-contained", "true", "-p:PublishAot=true", "-p:InvariantGlobalization=true"]);
+                break;
+            case ExecutableMode.SingleFile:
+                arguments.AddRange(["--self-contained", "true", "-p:PublishSingleFile=true", "-p:IncludeNativeLibrariesForSelfExtract=true"]);
+                break;
+            case ExecutableMode.FrameworkDependent:
+                arguments.AddRange(["--self-contained", "false"]);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+
+        return arguments;
+    }
+
+    private static string CommitPublishedArtifacts(string publishDirectory, string executablePath, string outputDirectory)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outputDirectory);
+        var normalizedPublishDirectory = Path.GetFullPath(publishDirectory);
+        var normalizedOutputDirectory = Path.GetFullPath(outputDirectory);
+        Directory.CreateDirectory(normalizedOutputDirectory);
+
+        var primaryRelativePath = GetSafeRelativePath(normalizedPublishDirectory, executablePath);
+        var stagedFiles = Directory.EnumerateFiles(normalizedPublishDirectory, "*", SearchOption.AllDirectories)
+            .Select(file => new PublishedFile(file, GetSafeRelativePath(normalizedPublishDirectory, file)))
+            .ToArray();
+
+        var temporaryFiles = new List<StagedArtifact>(stagedFiles.Length);
+        try
+        {
+            foreach (var file in stagedFiles)
+            {
+                var destination = Path.Combine(normalizedOutputDirectory, file.RelativePath);
+                Directory.CreateDirectory(Path.GetDirectoryName(destination) ?? normalizedOutputDirectory);
+                var temporaryPath = destination + ".vela-" + Guid.NewGuid().ToString("N") + ".tmp";
+                File.Copy(file.SourcePath, temporaryPath, overwrite: false);
+                CopyUnixFileMode(file.SourcePath, temporaryPath);
+                temporaryFiles.Add(new StagedArtifact(temporaryPath, destination, string.Equals(file.RelativePath, primaryRelativePath, StringComparison.Ordinal)));
+            }
+
+            foreach (var artifact in temporaryFiles.Where(static artifact => !artifact.IsPrimary))
+            {
+                File.Move(artifact.TemporaryPath, artifact.DestinationPath, overwrite: true);
+            }
+
+            var primary = temporaryFiles.Single(static artifact => artifact.IsPrimary);
+            File.Move(primary.TemporaryPath, primary.DestinationPath, overwrite: true);
+            return primary.DestinationPath;
+        }
+        finally
+        {
+            foreach (var artifact in temporaryFiles)
+            {
+                if (File.Exists(artifact.TemporaryPath))
+                {
+                    File.Delete(artifact.TemporaryPath);
+                }
+            }
+        }
+    }
+
+    private static string GetSafeRelativePath(string rootDirectory, string path)
+    {
+        var relativePath = Path.GetRelativePath(rootDirectory, path);
+        if (Path.IsPathRooted(relativePath) || relativePath.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) || relativePath == "..")
+        {
+            throw new InvalidOperationException("Publish output contains a path outside its staging directory.");
+        }
+
+        return relativePath;
+    }
+
+    private static string AppendError(string standardError, string message) => string.IsNullOrWhiteSpace(standardError)
+        ? message + Environment.NewLine
+        : standardError + Environment.NewLine + message + Environment.NewLine;
+
+    private static void CopyUnixFileMode(string sourcePath, string destinationPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(destinationPath, File.GetUnixFileMode(sourcePath));
+        }
+    }
+
+    private static void TryDeleteDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+            // A cleanup failure must not hide the compiler result.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // A cleanup failure must not hide the compiler result.
+        }
     }
 
     private static async Task<ProcessResult> RunDotnetAsync(IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
@@ -153,6 +287,10 @@ public sealed class VelaBuildService
         var sanitized = new string(name.Select(static character => char.IsLetterOrDigit(character) || character is '_' or '-' ? character : '_').ToArray());
         return string.IsNullOrWhiteSpace(sanitized) ? "VelaApplication" : sanitized;
     }
+
+    private sealed record PublishedFile(string SourcePath, string RelativePath);
+
+    private sealed record StagedArtifact(string TemporaryPath, string DestinationPath, bool IsPrimary);
 }
 
 /// <summary>Paths of generated project files prepared for run or publish.</summary>

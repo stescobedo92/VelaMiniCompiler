@@ -72,6 +72,17 @@ public sealed record IfStatementSyntax(
     public override TextSpan Span => TextSpan.FromBounds(IfKeyword.Span.Start, (ElseClause?.Span ?? ThenBlock.Span).End);
 }
 
+public sealed record ForStatementSyntax(
+    SyntaxToken ForKeyword,
+    SyntaxToken Identifier,
+    SyntaxToken InKeyword,
+    ExpressionSyntax Collection,
+    SyntaxToken ColonToken,
+    BlockSyntax Body) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(ForKeyword.Span.Start, Body.Span.End);
+}
+
 public sealed record ElseClauseSyntax(
     SyntaxToken ElseKeyword,
     SyntaxToken ColonToken,

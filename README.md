@@ -2,19 +2,19 @@
 
 Vela is an experimental, modern programming language and compiler written in C#.
 It combines indentation-based blocks with explicit types, generic records, managed
-memory, and native Windows executable publishing. Its syntax is intentionally its
+memory, and host-native executable publishing. Its syntax is intentionally its
 own: it borrows familiar ideas without trying to be source-compatible with C#.
 
 ## Highlights
 
 - Immutable `let` bindings and mutable `var` bindings.
 - Indentation-based `fn` and `record Name<T>:` declarations.
-- Generic functions and records with managed `List<T>`, `Option<T>`, and `Result<T, E>` runtime values.
+- Generic functions and records with managed `Vector<T>`, `HashMap<K, V>`, `HashSet<T>`, `Queue<T>`, `Stack<T>`, `RingBuffer<T>`, `BitSet`, `Option<T>`, and `Result<T, E>` runtime values.
 - Source-aware diagnostics with error codes, locations, excerpts, and guidance.
 - Managed .NET object lifetime with garbage collection and no raw pointers or manual freeing.
 - Source-level assertions backed by the managed contract runtime.
-- A compiler pipeline that can generate C# source and publish a self-contained
-  Windows executable.
+- A compiler pipeline that can generate C# source and publish a host-native
+  executable automatically.
 
 ## Repository layout
 
@@ -34,7 +34,7 @@ docs/              Language and engineering documentation
 ## Prerequisites
 
 - .NET SDK 10.0 or later.
-- Windows when publishing a self-contained `.exe`.
+- A host supported by the installed .NET Native AOT toolchain when publishing a native executable.
 
 ## Build and test
 
@@ -59,21 +59,26 @@ dotnet run --project .\src\Vela.Cli -- check .\examples\diagnostics.vela
 
 `diagnostics.vela` is deliberately invalid and should produce a readable error.
 
-Publish a self-contained Windows executable:
+Publish a host-native executable. `--target auto` is the default and selects the
+current .NET runtime identifier without parsing it:
 
 ```powershell
 dotnet run --project .\src\Vela.Cli -- build .\examples\hello.vela `
-  --target win-x64 --output .\dist\hello
+  --output .\dist\hello
 ```
 
-The published executable is `dist\hello\hello.exe` and can run without a
-separately installed .NET runtime.
+On Windows the artifact is `dist\hello\hello.exe`; on Linux and macOS it is
+`dist/hello/hello`. The command prints the final absolute path as `Executable:`.
+Use `vela targets` to display the auto target, or use `--target <rid>` to make
+an explicit publishing request.
 
 ## Language guide and examples
 
 Read [the Vela language guide](docs/Vela-language.md) for the syntax and semantic
 rules. The [examples](examples) directory contains runnable programs for a basic
-entry point, generic records, managed allocations, contract assertions, and compiler diagnostics.
+entry point, generic records, managed allocations, contract assertions,
+collections, and compiler diagnostics. Read [the collection guide](docs/Vela-collections.md)
+for APIs and precise complexity guarantees.
 
 ## Status
 

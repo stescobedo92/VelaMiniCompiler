@@ -1,5 +1,9 @@
 # Vela compiler design
 
+> Historical initial-release design. Host-native publishing and collection
+> behavior are superseded by
+> [the host-native collections design](2026-07-14-host-native-collections-design.md).
+
 ## Scope
 
 Vela is a small, statically checked language implemented in C# on .NET 10. The

@@ -21,6 +21,7 @@ internal static class VelaCommandLine
                 "check" => Check(arguments[1..]),
                 "run" => await RunProgramAsync(arguments[1..]),
                 "build" => await BuildAsync(arguments[1..]),
+                "targets" => ShowTargets(arguments[1..]),
                 _ => Fail($"Unknown command '{arguments[0]}'. Run 'vela --help' for usage.")
             };
         }
@@ -98,7 +99,7 @@ internal static class VelaCommandLine
             return Fail("The build command requires '--output <directory>'.");
         }
 
-        var target = TryGetOption(arguments, "--target", out var specifiedTarget) ? specifiedTarget : "win-x64";
+        var target = TryGetOption(arguments, "--target", out var specifiedTarget) ? specifiedTarget : BuildTargetResolver.Auto;
         var mode = TryGetOption(arguments, "--mode", out var specifiedMode)
             ? ParseMode(specifiedMode)
             : ExecutableMode.NativeAot;
@@ -121,12 +122,25 @@ internal static class VelaCommandLine
         WriteProcessOutput(new ProcessResult(result.Succeeded ? 0 : 1, result.StandardOutput, result.StandardError));
         if (result.Succeeded)
         {
-            Console.WriteLine($"Build succeeded: {result.PublishDirectory}");
-            Console.WriteLine($"Generated source: {result.SourceDirectory}");
+            Console.WriteLine($"Target: {result.RuntimeIdentifier}");
+            Console.WriteLine($"Executable: {result.ExecutablePath}");
             return 0;
         }
 
         return 1;
+    }
+
+    private static int ShowTargets(string[] arguments)
+    {
+        if (arguments.Length != 0)
+        {
+            return Fail("The targets command does not accept arguments.");
+        }
+
+        var target = BuildTargetResolver.Resolve(BuildTargetResolver.Auto);
+        Console.WriteLine($"Auto target: {target.RuntimeIdentifier}");
+        Console.WriteLine("Use 'vela build <file.vela> --target <rid> --output <directory>' to request an explicit .NET runtime identifier.");
+        return 0;
     }
 
     private static VelaCompilation Compile(string inputPath)
@@ -232,6 +246,7 @@ internal static class VelaCommandLine
         Console.WriteLine("Vela compiler");
         Console.WriteLine("  vela check <file.vela>");
         Console.WriteLine("  vela run <file.vela>");
-        Console.WriteLine("  vela build <file.vela> --output <directory> [--target win-x64] [--mode native-aot|single-file|framework-dependent]");
+        Console.WriteLine("  vela build <file.vela> --output <directory> [--target auto] [--mode native-aot|single-file|framework-dependent]");
+        Console.WriteLine("  vela targets");
     }
 }

@@ -103,4 +103,25 @@ public sealed class VelaParserTests
         var message = Assert.IsType<LiteralExpressionSyntax>(assertion.Message);
         Assert.Equal("positive", message.LiteralToken.Value);
     }
+
+    [Fact]
+    public void ParseCollectionsCapturesGenericConstructionIndexingAndIteration()
+    {
+        const string code = "fn main() -> Int:\n    var values = Vector<Int>(4)\n    values[0] = 7\n    for value in values:\n        print(value)\n    return 0\n";
+
+        var result = VelaParser.Parse(new SourceText(code, "collections.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        var variable = Assert.IsType<VarStatementSyntax>(function.Body.Statements[0]);
+        var construction = Assert.IsType<CallExpressionSyntax>(variable.Initializer);
+        Assert.Equal("Int", Assert.IsType<NamedTypeSyntax>(Assert.Single(construction.TypeArguments)).Identifier.Text);
+
+        var assignment = Assert.IsType<ExpressionStatementSyntax>(function.Body.Statements[1]);
+        Assert.IsType<IndexExpressionSyntax>(Assert.IsType<AssignmentExpressionSyntax>(assignment.Expression).Target);
+
+        var loop = Assert.IsType<ForStatementSyntax>(function.Body.Statements[2]);
+        Assert.Equal("value", loop.Identifier.Text);
+        Assert.IsType<NameExpressionSyntax>(loop.Collection);
+    }
 }

@@ -25,3 +25,12 @@ FileStream stream = scope.Track(File.OpenRead("input.txt"));
 ```
 
 `Disposal.DisposeAll` also accepts a span of resources when the compiler already knows the cleanup set statically.
+
+## Collections
+
+The runtime also provides Native AOT-safe collection implementations for Vela:
+`VelaVector<T>`, `VelaHashMap<TKey, TValue>`, `VelaHashSet<T>`, `VelaQueue<T>`,
+`VelaStack<T>`, `RingBuffer<T>`, and `BitSet`. They use managed arrays or .NET
+generic collections, have no reflection dependency, and expose `Option<T>` for
+empty removal and lookup operations. The compiler emits calls to these known
+APIs rather than dynamically resolving user-provided members.

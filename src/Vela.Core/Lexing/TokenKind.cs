@@ -21,6 +21,8 @@ public enum TokenKind
     AssertKeyword,
     IfKeyword,
     ElseKeyword,
+    ForKeyword,
+    InKeyword,
     TrueKeyword,
     FalseKeyword,
     NilKeyword,

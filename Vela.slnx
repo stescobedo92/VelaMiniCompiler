@@ -10,4 +10,7 @@
     <Project Path="tests/Vela.Core.Tests/Vela.Core.Tests.csproj" />
     <Project Path="tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Vela.Runtime.Benchmarks/Vela.Runtime.Benchmarks.csproj" />
+  </Folder>
 </Solution>
