@@ -1,0 +1,140 @@
+using System.Runtime.ExceptionServices;
+
+namespace Vela.Runtime;
+
+/// <summary>
+/// Provides deterministic resource cleanup primitives for compiler-generated code.
+/// </summary>
+public static class Disposal
+{
+    /// <summary>
+    /// Disposes resources in reverse registration order. Every resource is given a chance to dispose.
+    /// </summary>
+    /// <param name="resources">The resources to dispose, ordered by registration time.</param>
+    /// <exception cref="AggregateException">Thrown when more than one resource fails during cleanup.</exception>
+    public static void DisposeAll(ReadOnlySpan<IDisposable?> resources)
+    {
+        List<Exception>? failures = null;
+
+        for (var index = resources.Length - 1; index >= 0; index--)
+        {
+            try
+            {
+                resources[index]?.Dispose();
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
+        }
+
+        if (failures is { Count: 1 })
+        {
+            ExceptionDispatchInfo.Capture(failures[0]).Throw();
+        }
+
+        if (failures is { Count: > 1 })
+        {
+            throw new AggregateException("Multiple resources failed during disposal.", failures);
+        }
+    }
+
+    /// <summary>
+    /// Disposes a resource and clears its reference before invoking <see cref="IDisposable.Dispose"/>.
+    /// </summary>
+    /// <typeparam name="T">The disposable reference type.</typeparam>
+    /// <param name="resource">The reference to dispose and clear.</param>
+    public static void Dispose<T>(ref T? resource)
+        where T : class, IDisposable
+    {
+        T? current = resource;
+        resource = null;
+        current?.Dispose();
+    }
+}
+
+/// <summary>
+/// Tracks disposable resources and releases them in reverse registration order.
+/// </summary>
+public sealed class DisposalScope : IDisposable
+{
+    private IDisposable?[]? _resources;
+    private int _count;
+    private bool _disposed;
+
+    /// <summary>
+    /// Registers a resource for cleanup and returns it unchanged.
+    /// </summary>
+    /// <typeparam name="T">The disposable reference type.</typeparam>
+    /// <param name="resource">The resource to register.</param>
+    /// <returns><paramref name="resource"/>.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="resource"/> is null.</exception>
+    /// <exception cref="ObjectDisposedException">Thrown when the scope has already been disposed.</exception>
+    public T Track<T>(T resource)
+        where T : class, IDisposable
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(resource);
+        Add(resource);
+        return resource;
+    }
+
+    /// <summary>
+    /// Registers a resource for cleanup when it is not null.
+    /// </summary>
+    /// <param name="resource">The resource to register.</param>
+    /// <exception cref="ObjectDisposedException">Thrown when the scope has already been disposed.</exception>
+    public void Track(IDisposable? resource)
+    {
+        ThrowIfDisposed();
+
+        if (resource is not null)
+        {
+            Add(resource);
+        }
+    }
+
+    /// <summary>
+    /// Disposes all tracked resources. Calling this method more than once has no effect.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+
+        IDisposable?[]? resources = _resources;
+        int count = _count;
+        _resources = null;
+        _count = 0;
+
+        if (resources is not null)
+        {
+            Disposal.DisposeAll(resources.AsSpan(0, count));
+        }
+    }
+
+    private void Add(IDisposable resource)
+    {
+        ThrowIfDisposed();
+
+        IDisposable?[]? resources = _resources;
+        if (resources is null)
+        {
+            resources = new IDisposable?[4];
+            _resources = resources;
+        }
+        else if (_count == resources.Length)
+        {
+            Array.Resize(ref resources, checked(resources.Length * 2));
+            _resources = resources;
+        }
+
+        resources[_count++] = resource;
+    }
+
+    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+}

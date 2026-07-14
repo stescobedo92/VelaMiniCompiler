@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Vela.Backend/Vela.Backend.csproj" />
+    <Project Path="src/Vela.Cli/Vela.Cli.csproj" />
+    <Project Path="src/Vela.Core/Vela.Core.csproj" />
+    <Project Path="src/Vela.Runtime/Vela.Runtime.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Vela.Backend.Tests/Vela.Backend.Tests.csproj" />
+    <Project Path="tests/Vela.Core.Tests/Vela.Core.Tests.csproj" />
+    <Project Path="tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj" />
+  </Folder>
+</Solution>

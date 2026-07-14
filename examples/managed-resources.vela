@@ -1,0 +1,9 @@
+# Run with: vela run examples/managed-resources.vela
+
+record Note:
+    text: Text
+
+fn main() -> Int:
+    let notes: List<Note> = [Note("A managed value"), Note("Another managed value")]
+    print("Created managed records and a managed list")
+    0

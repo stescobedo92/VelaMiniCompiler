@@ -1,0 +1,7 @@
+# This file is intentionally invalid.
+# Run with: vela check examples/diagnostics.vela
+
+fn main() -> Int:
+    let answer: Int = 42
+    answer = 43
+    0

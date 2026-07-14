@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Vela.Core\Vela.Core.csproj" />
+    <ProjectReference Include="..\Vela.Runtime\Vela.Runtime.csproj" />
+  </ItemGroup>
+</Project>

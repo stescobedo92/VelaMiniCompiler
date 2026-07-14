@@ -1,0 +1,33 @@
+# .NET build and publish outputs
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+artifacts/
+dist/
+publish/
+
+# Test and coverage output
+TestResults/
+coverage/
+coverage.xml
+*.coverage
+*.coveragexml
+
+# NuGet packages and symbols produced locally
+*.nupkg
+*.snupkg
+
+# IDE and user-specific state
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Local tooling and operating-system files
+.dotnet/
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
