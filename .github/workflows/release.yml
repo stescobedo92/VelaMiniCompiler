@@ -354,7 +354,7 @@ jobs:
       - name: Sign Linux artifacts
         if: needs.prepare.outputs.sign == 'true'
         shell: bash
-        run: ./eng/release/linux/sign-artifacts.sh "$DIRECT_ARTIFACT" "$DIST/vela_$VERSION_amd64.deb" "$DIST/vela-$VERSION-1.x86_64.rpm"
+        run: ./eng/release/linux/sign-artifacts.sh "$DIRECT_ARTIFACT" "$DIST/vela_${VERSION}_amd64.deb" "$DIST/vela-$VERSION-1.x86_64.rpm"
 
       - name: Attest compiler provenance
         uses: actions/attest@v4

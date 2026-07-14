@@ -42,7 +42,7 @@ fpm --force \
   --description "Vela compiler and command-line tools" \
   --url "https://github.com/$repository" \
   --license "MIT" \
-  --package "$output_directory/vela_$version_amd64.deb" \
+  --package "$output_directory/vela_${version}_amd64.deb" \
   -C "$stage" .
 
 fpm --force \
