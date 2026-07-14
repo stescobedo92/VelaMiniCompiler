@@ -1,0 +1,9 @@
+include vela.core;
+
+public ffi fn add(left: Int, right: Int) -> Int {
+    return left + right;
+}
+
+public ffi fn label() -> Text {
+    return "vela.math";
+}

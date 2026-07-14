@@ -1,0 +1,49 @@
+# Run with: vela run examples/types-objects.vela
+
+include vela.core;
+
+public interface Printable {
+    fn render() -> Text;
+}
+
+public struct Point {
+    x: Int;
+    y: Int;
+}
+
+public class Counter implements Printable {
+    var value: Int;
+
+    fn increment() -> Int {
+        self.value = self.value + 1;
+        return self.value;
+    }
+
+    fn render() -> Text {
+        return "Counter";
+    }
+}
+
+fn main() -> Int {
+    let point = Point(3, 4);
+    let counter = Counter(point.x);
+    print(counter.increment());
+    print(counter.render());
+
+    let boxed: Any = 42;
+    let value: Int = unbox<Int>(boxed);
+    let optional: Int? = try_unbox<Int>(boxed);
+    print(value);
+    print(optional.value);
+
+    var values = Array<Int>(2);
+    values[0] = point.x;
+    values[1] = Int(7);
+    print(values[0] + values[1]);
+
+    let total: Long = Long(value) + Long(1);
+    let precise: Decimal = Decimal(total);
+    let ratio: Double = Double(precise);
+    print(ratio);
+    return 0;
+}

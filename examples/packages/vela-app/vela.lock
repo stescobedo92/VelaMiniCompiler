@@ -1,0 +1,19 @@
+{
+  "LockVersion": 1,
+  "Packages": [
+    {
+      "Name": "vela.app",
+      "Version": "0.1.0",
+      "Kind": "application",
+      "Path": ".",
+      "ManifestHash": "b8f24200f9dbad20697c56cf16f48449d1a005768e82e4928b26c98127435d65"
+    },
+    {
+      "Name": "vela.math",
+      "Version": "0.1.0",
+      "Kind": "library",
+      "Path": "../vela-math",
+      "ManifestHash": "fe2226b559b9086742d92a136f8fed7385d9f5c1f006daa0ce66daeaf106133f"
+    }
+  ]
+}

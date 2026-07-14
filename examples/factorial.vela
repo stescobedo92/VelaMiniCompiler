@@ -1,14 +1,19 @@
 # Run with: vela run examples/factorial.vela
 
-fn factorial(value: Int) -> Int:
-    assert value >= 0, "factorial requires a non-negative Int"
-    if value == 0:
-        1
-    else:
-        value * factorial(value - 1)
+include vela.core;
 
-fn main() -> Int:
-    let input: Int = 10
-    let result = factorial(input)
-    print(result)
-    0
+fn factorial(value: Int) -> Int {
+    assert value >= 0, "factorial requires a non-negative Int";
+    if value == 0 {
+        return 1;
+    } else {
+        return value * factorial(value - 1);
+    }
+}
+
+fn main() -> Int {
+    let input: Int = 10;
+    let result = factorial(input);
+    print(result);
+    return 0;
+}

@@ -48,6 +48,20 @@ public sealed class VelaVector<T> : IEnumerable<T>
         set => _items[index] = value;
     }
 
+    /// <summary>Gets an element and preserves the originating Vela source location on a bounds failure.</summary>
+    public T Get(int index, string sourceLocation)
+    {
+        VelaGuards.RequireIndex(index, _items.Count, sourceLocation);
+        return _items[index];
+    }
+
+    /// <summary>Sets an element and preserves the originating Vela source location on a bounds failure.</summary>
+    public void Set(int index, T value, string sourceLocation)
+    {
+        VelaGuards.RequireIndex(index, _items.Count, sourceLocation);
+        _items[index] = value;
+    }
+
     /// <summary>Appends <paramref name="value"/> to the end of the vector.</summary>
     /// <param name="value">The value to append.</param>
     public void Append(T value) => _items.Add(value);

@@ -6,4 +6,7 @@
     <ProjectReference Include="..\Vela.Core\Vela.Core.csproj" />
     <ProjectReference Include="..\Vela.Backend\Vela.Backend.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.57.0" />
+  </ItemGroup>
 </Project>

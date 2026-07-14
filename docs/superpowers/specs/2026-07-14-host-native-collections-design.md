@@ -85,25 +85,27 @@ collections naturally:
    capacity; omitted means an empty collection with the runtime default.
 2. Postfix indexing for reads and assignments, such as `values[0]` and
    `scores["Ada"] = 42`.
-3. `for item in collection:` iteration over Vela collections.
+3. `for item in collection { ... }` iteration over Vela collections.
 
 The collection API is deliberately small and uniform:
 
 ```vela
-fn main() -> Int:
-    var values = Vector<Int>(128)
-    values.append(7)
-    values.append(11)
-    values[0] = 9
+fn main() -> Int {
+    var values = Vector<Int>(128);
+    values.append(7);
+    values.append(11);
+    values[0] = 9;
 
-    var scores = HashMap<Text, Int>(64)
-    scores.set("Ada", 42)
-    let score = scores.try_get("Ada")
+    var scores = HashMap<Text, Int>(64);
+    scores.set("Ada", 42);
+    let score = scores.try_get("Ada");
 
-    for value in values:
-        print(value)
+    for value in values {
+        print(value);
+    }
 
-    0
+    return 0;
+}
 ```
 
 `Vector` supports `append`, `pop`, `count`, `capacity`, `reserve`, `clear`,

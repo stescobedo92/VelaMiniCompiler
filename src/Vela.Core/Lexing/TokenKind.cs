@@ -5,8 +5,6 @@ public enum TokenKind
     BadToken,
     EndOfFile,
     NewLine,
-    Indent,
-    Dedent,
 
     Identifier,
     IntegerLiteral,
@@ -17,6 +15,14 @@ public enum TokenKind
     VarKeyword,
     FnKeyword,
     RecordKeyword,
+    IncludeKeyword,
+    PublicKeyword,
+    FfiKeyword,
+    ClassKeyword,
+    StructKeyword,
+    InterfaceKeyword,
+    ImplementsKeyword,
+    AsKeyword,
     ReturnKeyword,
     AssertKeyword,
     IfKeyword,
@@ -41,10 +47,13 @@ public enum TokenKind
     Arrow,
     Colon,
     Comma,
+    Semicolon,
     Dot,
     Question,
     LeftParen,
     RightParen,
     LeftBracket,
-    RightBracket
+    RightBracket,
+    LeftBrace,
+    RightBrace
 }

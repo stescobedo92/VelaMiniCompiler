@@ -1,3 +1,4 @@
+using Spectre.Console;
 using Vela.Backend;
 using Vela.Core.Diagnostics;
 using Vela.Core.Source;
@@ -8,74 +9,101 @@ internal static class VelaCommandLine
 {
     public static async Task<int> RunAsync(string[] arguments)
     {
+        var options = CommandOptions.Parse(arguments);
+        var renderer = new VelaConsoleRenderer(options);
         try
         {
-            if (arguments.Length == 0 || arguments[0] is "--help" or "-h" or "help")
+            if (options.Command is null or "help")
             {
-                PrintUsage();
+                PrintUsage(renderer);
                 return 0;
             }
 
-            return arguments[0] switch
+            return options.Command switch
             {
-                "check" => Check(arguments[1..]),
-                "run" => await RunProgramAsync(arguments[1..]),
-                "build" => await BuildAsync(arguments[1..]),
-                "targets" => ShowTargets(arguments[1..]),
-                _ => Fail($"Unknown command '{arguments[0]}'. Run 'vela --help' for usage.")
+                "check" => Check(options, renderer),
+                "run" => await RunProgramAsync(options, renderer),
+                "build" => await BuildAsync(options, renderer),
+                "targets" => ShowTargets(options, renderer),
+                _ => Fail(renderer, $"Unknown command '{options.Command}'. Run 'vela --help' for usage.")
             };
+        }
+        catch (VelaPackageException exception)
+        {
+            return Fail(renderer, exception.Message);
         }
         catch (OperationCanceledException)
         {
-            return Fail("The operation was cancelled.");
+            return Fail(renderer, "The operation was cancelled.");
         }
         catch (Exception exception)
         {
-            return Fail($"Internal compiler failure: {exception.Message}");
+            return Fail(renderer, $"Internal compiler failure: {exception.Message}");
         }
     }
 
-    private static int Check(string[] arguments)
+    private static int Check(CommandOptions options, VelaConsoleRenderer renderer)
     {
-        if (!TryGetInputPath(arguments, out var inputPath))
+        var input = ResolveInput(options, renderer, out var package);
+        if (input is null)
         {
-            return Fail("The check command requires one .vela source file.");
+            return 2;
         }
 
-        var compilation = Compile(inputPath);
-        PrintDiagnostics(compilation);
+        renderer.Status("Checking", input);
+        if (package is not null)
+        {
+            renderer.Detail("Resolving", $"{package.Packages.Count} package(s) from {package.Root.ManifestPath}");
+        }
+
+        var imports = package is null ? [] : CreateCheckImports(package, BuildTargetResolver.Resolve(BuildTargetResolver.Auto).RuntimeIdentifier);
+        var compilation = Compile(input, imports);
+        renderer.PrintDiagnostics(compilation);
         if (compilation.HasErrors)
         {
             return 1;
         }
 
-        Console.WriteLine($"Check succeeded: {inputPath}");
+        renderer.Success("Finished", $"check in {input}");
         return 0;
     }
 
-    private static async Task<int> RunProgramAsync(string[] arguments)
+    private static async Task<int> RunProgramAsync(CommandOptions options, VelaConsoleRenderer renderer)
     {
-        if (!TryGetInputPath(arguments, out var inputPath))
+        var input = ResolveInput(options, renderer, out var package);
+        if (input is null)
         {
-            return Fail("The run command requires one .vela source file.");
+            return 2;
         }
 
-        var compilation = Compile(inputPath);
-        PrintDiagnostics(compilation);
+        if (package?.Root.Kind == VelaPackageKind.Library || options.BuildLibrary)
+        {
+            return Fail(renderer, "The run command requires an application package, not a library.");
+        }
+
+        renderer.Status("Checking", input);
+        if (package is not null && package.Packages.Count > 1)
+        {
+            return Fail(renderer, "Run package dependencies with 'vela build' first, then execute the published native artifact.");
+        }
+
+        var compilation = Compile(input);
+        renderer.PrintDiagnostics(compilation);
         if (compilation.HasErrors)
         {
             return 1;
         }
 
+        renderer.Status("Running", Path.GetFileName(input));
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "vela", Guid.NewGuid().ToString("N"));
         try
         {
             var buildService = new VelaBuildService(FindRuntimeProject());
             var generatedProject = buildService.WriteSourceProject(
                 compilation,
-                new BuildOptions(Path.GetFileNameWithoutExtension(inputPath), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
+                new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
             var result = await VelaBuildService.RunGeneratedProjectAsync(generatedProject);
-            WriteProcessOutput(result);
+            renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2);
             return result.ExitCode;
         }
         finally
@@ -87,136 +115,275 @@ internal static class VelaCommandLine
         }
     }
 
-    private static async Task<int> BuildAsync(string[] arguments)
+    private static async Task<int> BuildAsync(CommandOptions options, VelaConsoleRenderer renderer)
     {
-        if (!TryGetInputPath(arguments, out var inputPath))
+        var input = ResolveInput(options, renderer, out var package);
+        if (input is null)
         {
-            return Fail("The build command requires one .vela source file.");
+            return 2;
         }
 
-        if (!TryGetOption(arguments, "--output", out var outputDirectory))
+        var target = options.Target ?? BuildTargetResolver.Auto;
+        var mode = options.Mode ?? ExecutableMode.NativeAot;
+        var isLibrary = options.BuildLibrary || package?.Root.Kind == VelaPackageKind.Library;
+        if (isLibrary && mode != ExecutableMode.NativeAot)
         {
-            return Fail("The build command requires '--output <directory>'.");
+            return Fail(renderer, "Vela shared libraries require '--mode native-aot'.");
         }
 
-        var target = TryGetOption(arguments, "--target", out var specifiedTarget) ? specifiedTarget : BuildTargetResolver.Auto;
-        var mode = TryGetOption(arguments, "--mode", out var specifiedMode)
-            ? ParseMode(specifiedMode)
-            : ExecutableMode.NativeAot;
-        if (mode is null)
+        var resolvedTarget = BuildTargetResolver.Resolve(target);
+        var outputDirectory = options.OutputDirectory ?? GetDefaultOutputDirectory(input, package, resolvedTarget.RuntimeIdentifier, isLibrary);
+        renderer.Status("Resolving", package is null ? input : $"{package.Root.Name} v{package.Root.Version} ({package.Root.RootDirectory})");
+        if (package is not null)
         {
-            return Fail("The build mode must be 'native-aot', 'single-file', or 'framework-dependent'.");
-        }
-
-        var compilation = Compile(inputPath);
-        PrintDiagnostics(compilation);
-        if (compilation.HasErrors)
-        {
-            return 1;
-        }
-
-        var buildService = new VelaBuildService(FindRuntimeProject());
-        var result = await buildService.BuildAsync(
-            compilation,
-            new BuildOptions(Path.GetFileNameWithoutExtension(inputPath), outputDirectory, target, mode.Value));
-        WriteProcessOutput(new ProcessResult(result.Succeeded ? 0 : 1, result.StandardOutput, result.StandardError));
-        if (result.Succeeded)
-        {
-            Console.WriteLine($"Target: {result.RuntimeIdentifier}");
-            Console.WriteLine($"Executable: {result.ExecutablePath}");
-            return 0;
-        }
-
-        return 1;
-    }
-
-    private static int ShowTargets(string[] arguments)
-    {
-        if (arguments.Length != 0)
-        {
-            return Fail("The targets command does not accept arguments.");
-        }
-
-        var target = BuildTargetResolver.Resolve(BuildTargetResolver.Auto);
-        Console.WriteLine($"Auto target: {target.RuntimeIdentifier}");
-        Console.WriteLine("Use 'vela build <file.vela> --target <rid> --output <directory>' to request an explicit .NET runtime identifier.");
-        return 0;
-    }
-
-    private static VelaCompilation Compile(string inputPath)
-    {
-        var source = new SourceText(File.ReadAllText(inputPath), inputPath);
-        return VelaCompiler.Compile(source);
-    }
-
-    private static void PrintDiagnostics(VelaCompilation compilation)
-    {
-        foreach (var diagnostic in compilation.Diagnostics.OrderBy(static diagnostic => diagnostic.Span.Start))
-        {
-            Console.Error.WriteLine(DiagnosticFormatter.Format(compilation.Source, diagnostic));
-        }
-    }
-
-    private static void WriteProcessOutput(ProcessResult result)
-    {
-        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
-        {
-            Console.Out.Write(result.StandardOutput);
-        }
-
-        if (!string.IsNullOrWhiteSpace(result.StandardError))
-        {
-            Console.Error.Write(result.StandardError);
-        }
-    }
-
-    private static bool TryGetInputPath(string[] arguments, out string inputPath)
-    {
-        inputPath = string.Empty;
-        if (arguments.Length == 0 || arguments[0].StartsWith("--", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var candidate = Path.GetFullPath(arguments[0]);
-        if (!File.Exists(candidate))
-        {
-            _ = Fail($"Source file not found: {candidate}");
-            return false;
-        }
-
-        if (!string.Equals(Path.GetExtension(candidate), ".vela", StringComparison.OrdinalIgnoreCase))
-        {
-            _ = Fail("The source file must use the .vela extension.");
-            return false;
-        }
-
-        inputPath = candidate;
-        return true;
-    }
-
-    private static bool TryGetOption(string[] arguments, string option, out string value)
-    {
-        for (var index = 0; index < arguments.Length - 1; index++)
-        {
-            if (string.Equals(arguments[index], option, StringComparison.Ordinal))
+            foreach (var dependency in package.Packages.Where(candidate => !ReferenceEquals(candidate, package.Root)))
             {
-                value = arguments[index + 1];
-                return !value.StartsWith("--", StringComparison.Ordinal);
+                renderer.Detail("Including", $"{dependency.Name} v{dependency.Version}");
             }
         }
 
-        value = string.Empty;
-        return false;
+        renderer.Status("Checking", input);
+        var buildService = new VelaBuildService(FindRuntimeProject());
+        var dependencyStagingDirectory = package is null
+            ? null
+            : Path.Combine(Path.GetTempPath(), "vela", "dependencies", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var imports = package is null
+                ? []
+                : await BuildDependenciesAsync(package, buildService, dependencyStagingDirectory!, target, renderer);
+            if (isLibrary)
+            {
+                var packageName = package?.Root.Name ?? Path.GetFileNameWithoutExtension(input);
+                var libraryCompilation = VelaCompiler.CompileLibrary(new SourceText(File.ReadAllText(input), input), packageName);
+                renderer.PrintDiagnostics(libraryCompilation.Compilation);
+                if (libraryCompilation.Compilation.HasErrors)
+                {
+                    return 1;
+                }
+
+                renderer.Status("Generating", $"native ABI exports for {packageName}");
+                renderer.Status("Publishing", $"{resolvedTarget.RuntimeIdentifier} shared library");
+                var result = await buildService.BuildLibraryAsync(
+                    libraryCompilation,
+                    new BuildOptions(packageName, outputDirectory, target, mode, VelaArtifactKind.SharedLibrary),
+                    package?.Root.Version ?? "0.1.0");
+                renderer.PrintProcessOutput(new ProcessResult(result.Build.Succeeded ? 0 : 1, result.Build.StandardOutput, result.Build.StandardError), raw: options.Verbosity >= 2);
+                if (!result.Build.Succeeded)
+                {
+                    return 1;
+                }
+
+                renderer.Success("Finished", $"native library {result.Build.LibraryPath}");
+                if (result.Manifest is not null)
+                {
+                    var manifestName = Path.GetFileNameWithoutExtension(result.Build.LibraryPath!) + ".velaabi.json";
+                    renderer.Detail("Manifest", Path.Combine(Path.GetDirectoryName(result.Build.LibraryPath!)!, manifestName));
+                }
+
+                return 0;
+            }
+
+            var compilation = Compile(input, imports);
+            renderer.PrintDiagnostics(compilation);
+            if (compilation.HasErrors)
+            {
+                return 1;
+            }
+
+            renderer.Status("Lowering", "Vela semantic model to Native AOT C#");
+            renderer.Status("Publishing", $"{resolvedTarget.RuntimeIdentifier} native executable");
+            var build = await buildService.BuildAsync(
+                compilation,
+                new BuildOptions(Path.GetFileNameWithoutExtension(input), outputDirectory, target, mode));
+            renderer.PrintProcessOutput(new ProcessResult(build.Succeeded ? 0 : 1, build.StandardOutput, build.StandardError), raw: options.Verbosity >= 2);
+            if (!build.Succeeded)
+            {
+                return 1;
+            }
+
+            CopyDependencyArtifacts(imports, build.ExecutablePath!);
+
+            renderer.Success("Finished", $"native executable {build.ExecutablePath}");
+            renderer.Detail("Target", build.RuntimeIdentifier);
+            renderer.Detail("Size", DescribeArtifactSize(build.ExecutablePath!));
+            renderer.Detail("Bundle", DescribeBundleSize(Path.GetDirectoryName(build.ExecutablePath!)!));
+            return 0;
+        }
+        finally
+        {
+            TryDeleteDirectory(dependencyStagingDirectory);
+        }
     }
 
-    private static ExecutableMode? ParseMode(string value) => value switch
+    private static int ShowTargets(CommandOptions options, VelaConsoleRenderer renderer)
     {
-        "native-aot" => ExecutableMode.NativeAot,
-        "single-file" => ExecutableMode.SingleFile,
-        "framework-dependent" => ExecutableMode.FrameworkDependent,
-        _ => null
-    };
+        if (options.InputPath is not null)
+        {
+            return Fail(renderer, "The targets command does not accept an input path.");
+        }
+
+        var target = BuildTargetResolver.Resolve(BuildTargetResolver.Auto);
+        renderer.Status("Target", $"auto = {target.RuntimeIdentifier}");
+        renderer.Detail("Usage", "vela build [path] --target <rid>");
+        return 0;
+    }
+
+    private static string? ResolveInput(CommandOptions options, VelaConsoleRenderer renderer, out VelaPackageGraph? package)
+    {
+        package = null;
+        var candidate = options.InputPath ?? Directory.GetCurrentDirectory();
+        var fullPath = Path.GetFullPath(candidate);
+        if (File.Exists(fullPath))
+        {
+            if (!string.Equals(Path.GetExtension(fullPath), ".vela", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = Fail(renderer, "A source input must use the .vela extension.");
+                return null;
+            }
+
+            return fullPath;
+        }
+
+        if (Directory.Exists(fullPath) || string.Equals(Path.GetFileName(fullPath), "vela.toml", StringComparison.OrdinalIgnoreCase))
+        {
+            package = VelaPackageResolver.Resolve(fullPath);
+            return package.Root.EntryPointPath;
+        }
+
+        _ = Fail(renderer, $"Source file or Vela package not found: {fullPath}");
+        return null;
+    }
+
+    private static string GetDefaultOutputDirectory(string input, VelaPackageGraph? package, string runtimeIdentifier, bool isLibrary)
+    {
+        var root = package?.Root.RootDirectory ?? Path.GetDirectoryName(input)!;
+        var profile = "release";
+        var name = isLibrary ? "lib" : "bin";
+        return Path.Combine(root, "target", runtimeIdentifier, profile, name);
+    }
+
+    private static VelaCompilation Compile(string inputPath, IReadOnlyList<VelaLibraryImport>? imports = null) =>
+        VelaCompiler.Compile(new SourceText(File.ReadAllText(inputPath), inputPath), imports ?? []);
+
+    private static List<VelaLibraryImport> CreateCheckImports(VelaPackageGraph package, string runtimeIdentifier)
+    {
+        var imports = new List<VelaLibraryImport>();
+        foreach (var dependency in package.Packages.Where(candidate => !ReferenceEquals(candidate, package.Root)))
+        {
+            if (dependency.Kind != VelaPackageKind.Library)
+            {
+                continue;
+            }
+
+            var source = new SourceText(File.ReadAllText(dependency.EntryPointPath), dependency.EntryPointPath);
+            var compilation = VelaCompiler.CompileLibrary(source, dependency.Name);
+            if (compilation.Compilation.HasErrors)
+            {
+                continue;
+            }
+
+            var libraryFileName = OperatingSystem.IsWindows()
+                ? dependency.Name.Replace(".", "_", StringComparison.Ordinal) + ".dll"
+                : "lib" + dependency.Name.Replace(".", "_", StringComparison.Ordinal) + ".so";
+            var manifest = VelaAbiManifest.Create(dependency.Name, dependency.Version, runtimeIdentifier, libraryFileName, compilation.Exports);
+            imports.Add(new VelaLibraryImport(dependency.Name, libraryFileName, manifest));
+        }
+
+        return imports;
+    }
+
+    private static async Task<IReadOnlyList<VelaLibraryImport>> BuildDependenciesAsync(
+        VelaPackageGraph package,
+        VelaBuildService buildService,
+        string dependencyOutput,
+        string target,
+        VelaConsoleRenderer renderer)
+    {
+        var imports = new List<VelaLibraryImport>();
+        foreach (var dependency in package.Packages.Where(candidate => !ReferenceEquals(candidate, package.Root)))
+        {
+            if (dependency.Kind != VelaPackageKind.Library)
+            {
+                throw new VelaPackageException($"Dependency '{dependency.Name}' is not a Vela library package.");
+            }
+
+            renderer.Status("Compiling", $"dependency {dependency.Name} v{dependency.Version}");
+            var source = new SourceText(File.ReadAllText(dependency.EntryPointPath), dependency.EntryPointPath);
+            var compilation = VelaCompiler.CompileLibrary(source, dependency.Name);
+            renderer.PrintDiagnostics(compilation.Compilation);
+            if (compilation.Compilation.HasErrors)
+            {
+                throw new VelaPackageException($"Dependency '{dependency.Name}' contains Vela compiler errors.");
+            }
+
+            var output = Path.Combine(dependencyOutput, dependency.Name.Replace(".", "_", StringComparison.Ordinal));
+            var result = await buildService.BuildLibraryAsync(
+                compilation,
+                new BuildOptions(dependency.Name, output, target, ExecutableMode.NativeAot, VelaArtifactKind.SharedLibrary),
+                dependency.Version);
+            if (!result.Build.Succeeded || result.Build.LibraryPath is null || result.Manifest is null)
+            {
+                throw new VelaPackageException($"Failed to build native dependency '{dependency.Name}': {result.Build.StandardError}");
+            }
+
+            imports.Add(new VelaLibraryImport(dependency.Name, result.Build.LibraryPath, result.Manifest));
+        }
+
+        return imports;
+    }
+
+    private static void CopyDependencyArtifacts(IReadOnlyList<VelaLibraryImport> imports, string executablePath)
+    {
+        var outputDirectory = Path.GetDirectoryName(executablePath) ?? throw new InvalidOperationException("The native executable has no parent directory.");
+        foreach (var importItem in imports)
+        {
+            var sourceDirectory = Path.GetDirectoryName(importItem.LibraryPath) ?? throw new InvalidOperationException("A library dependency has no parent directory.");
+            var libraryDestination = Path.Combine(outputDirectory, Path.GetFileName(importItem.LibraryPath));
+            File.Copy(importItem.LibraryPath, libraryDestination, overwrite: true);
+            foreach (var manifest in Directory.EnumerateFiles(sourceDirectory, "*.velaabi.json", SearchOption.TopDirectoryOnly))
+            {
+                File.Copy(manifest, Path.Combine(outputDirectory, Path.GetFileName(manifest)), overwrite: true);
+            }
+        }
+    }
+
+    private static void TryDeleteDirectory(string? directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+        catch (IOException)
+        {
+            // A temporary dependency cleanup failure must not hide a successful build.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // A temporary dependency cleanup failure must not hide a successful build.
+        }
+    }
+
+    private static string DescribeArtifactSize(string path)
+    {
+        var length = new FileInfo(path).Length;
+        return $"{length:N0} bytes ({length / 1024d / 1024d:F2} MiB)";
+    }
+
+    private static string DescribeBundleSize(string directory)
+    {
+        const long threeMiB = 3 * 1024 * 1024;
+        var length = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+            .Where(static path => !string.Equals(Path.GetExtension(path), ".velaabi.json", StringComparison.OrdinalIgnoreCase))
+            .Sum(static path => new FileInfo(path).Length);
+        var status = length <= threeMiB ? "within 3 MiB budget" : "over 3 MiB budget";
+        return $"{length:N0} bytes ({length / 1024d / 1024d:F2} MiB; {status})";
+    }
 
     private static string FindRuntimeProject()
     {
@@ -235,18 +402,292 @@ internal static class VelaCommandLine
         throw new FileNotFoundException("Unable to locate src/Vela.Runtime/Vela.Runtime.csproj. Run the CLI from the Vela repository.");
     }
 
-    private static int Fail(string message)
+    private static int Fail(VelaConsoleRenderer renderer, string message)
     {
-        Console.Error.WriteLine($"error VEL9000: {message}");
+        renderer.Error("VEL9000", message);
         return 2;
     }
 
-    private static void PrintUsage()
+    private static void PrintUsage(VelaConsoleRenderer renderer)
     {
-        Console.WriteLine("Vela compiler");
-        Console.WriteLine("  vela check <file.vela>");
-        Console.WriteLine("  vela run <file.vela>");
-        Console.WriteLine("  vela build <file.vela> --output <directory> [--target auto] [--mode native-aot|single-file|framework-dependent]");
-        Console.WriteLine("  vela targets");
+        renderer.Title("Vela compiler");
+        renderer.Detail("check", "vela check [file.vela | package-directory]");
+        renderer.Detail("run", "vela run [file.vela | package-directory]");
+        renderer.Detail("build", "vela build [file.vela | package-directory] [--lib] [--output directory] [--target rid]");
+        renderer.Detail("targets", "vela targets");
+        renderer.Detail("output", "Detailed and colored by default; use -q or --quiet to reduce output.");
+        renderer.Detail("color", "--color auto|always|never; use -vv to include raw .NET publishing output.");
+    }
+}
+
+internal sealed record CommandOptions(
+    string? Command,
+    string? InputPath,
+    string? OutputDirectory,
+    string? Target,
+    ExecutableMode? Mode,
+    bool BuildLibrary,
+    bool Quiet,
+    int Verbosity,
+    ColorMode ColorMode)
+{
+    public static CommandOptions Parse(string[] arguments)
+    {
+        string? command = null;
+        string? input = null;
+        string? output = null;
+        string? target = null;
+        ExecutableMode? mode = null;
+        var buildLibrary = false;
+        var quiet = false;
+        var verbosity = 0;
+        var color = ColorMode.Auto;
+
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            var argument = arguments[index];
+            if (argument is "--help" or "-h")
+            {
+                return new CommandOptions("help", null, null, null, null, false, false, 0, color);
+            }
+
+            if (argument is "--quiet" or "-q")
+            {
+                quiet = true;
+                continue;
+            }
+
+            if (argument is "-v" or "--verbose")
+            {
+                verbosity++;
+                continue;
+            }
+
+            if (argument == "-vv")
+            {
+                verbosity += 2;
+                continue;
+            }
+
+            if (argument == "--lib")
+            {
+                buildLibrary = true;
+                continue;
+            }
+
+            if (argument is "--output" or "--target" or "--mode" or "--color")
+            {
+                if (index + 1 >= arguments.Length)
+                {
+                    throw new ArgumentException($"Option '{argument}' requires a value.");
+                }
+
+                var value = arguments[++index];
+                switch (argument)
+                {
+                    case "--output": output = Path.GetFullPath(value); break;
+                    case "--target": target = value; break;
+                    case "--mode": mode = ParseMode(value); break;
+                    case "--color": color = ParseColorMode(value); break;
+                }
+
+                continue;
+            }
+
+            if (argument.StartsWith('-'))
+            {
+                throw new ArgumentException($"Unknown option '{argument}'.");
+            }
+
+            if (command is null)
+            {
+                command = argument;
+            }
+            else if (input is null)
+            {
+                input = argument;
+            }
+            else
+            {
+                throw new ArgumentException($"Unexpected argument '{argument}'.");
+            }
+        }
+
+        return new CommandOptions(command, input, output, target, mode, buildLibrary, quiet, verbosity, color);
+    }
+
+    private static ExecutableMode ParseMode(string value) => value switch
+    {
+        "native-aot" => ExecutableMode.NativeAot,
+        "single-file" => ExecutableMode.SingleFile,
+        "framework-dependent" => ExecutableMode.FrameworkDependent,
+        _ => throw new ArgumentException("The build mode must be 'native-aot', 'single-file', or 'framework-dependent'.")
+    };
+
+    private static ColorMode ParseColorMode(string value) => value switch
+    {
+        "auto" => ColorMode.Auto,
+        "always" => ColorMode.Always,
+        "never" => ColorMode.Never,
+        _ => throw new ArgumentException("The color mode must be 'auto', 'always', or 'never'.")
+    };
+}
+
+internal enum ColorMode
+{
+    Auto,
+    Always,
+    Never
+}
+
+internal sealed class VelaConsoleRenderer
+{
+    private readonly IAnsiConsole _console;
+    private readonly CommandOptions _options;
+
+    public VelaConsoleRenderer(CommandOptions options)
+    {
+        _options = options;
+        _console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            ColorSystem = options.ColorMode switch
+            {
+                ColorMode.Always => ColorSystemSupport.TrueColor,
+                ColorMode.Never => ColorSystemSupport.NoColors,
+                _ => ColorSystemSupport.Detect
+            }
+        });
+    }
+
+    public void Title(string title) => _console.MarkupLine($"[bold deepskyblue1]{Markup.Escape(title)}[/]");
+
+    public void Status(string verb, string message)
+    {
+        if (!_options.Quiet)
+        {
+            _console.MarkupLine($"[bold green]{Markup.Escape(verb),12}[/] {Markup.Escape(message)}");
+        }
+    }
+
+    public void Success(string verb, string message)
+    {
+        if (!_options.Quiet)
+        {
+            _console.MarkupLine($"[bold green]{Markup.Escape(verb),12}[/] [green]{Markup.Escape(message)}[/]");
+        }
+    }
+
+    public void Detail(string label, string message)
+    {
+        if (!_options.Quiet)
+        {
+            _console.MarkupLine($"[dim]{Markup.Escape(label),12}[/] {Markup.Escape(message)}");
+        }
+    }
+
+    public void Error(string code, string message) => _console.MarkupLine($"[bold red]error {Markup.Escape(code)}:[/] {Markup.Escape(message)}");
+
+    public void PrintDiagnostics(VelaCompilation compilation)
+    {
+        foreach (var diagnostic in compilation.Diagnostics.OrderBy(static diagnostic => diagnostic.Span.Start))
+        {
+            var location = compilation.Source.GetLocation(diagnostic.Span);
+            var severity = diagnostic.Severity == DiagnosticSeverity.Error ? "red" : "yellow";
+            _console.MarkupLine($"[bold {severity}]{diagnostic.Severity.ToString().ToLowerInvariant()} {Markup.Escape(diagnostic.Code)}:[/] {Markup.Escape(diagnostic.Message)} [dim]at {Markup.Escape(location.FilePath)}:{location.Line}:{location.Column}[/]");
+            var sourceLine = compilation.Source.Text.Split(["\r\n", "\n"], StringSplitOptions.None).ElementAtOrDefault(location.Line - 1);
+            if (sourceLine is not null)
+            {
+                _console.MarkupLine($"[dim]  |[/]");
+                _console.MarkupLine($"[dim]{location.Line,2} |[/] {Highlight(sourceLine)}");
+                _console.MarkupLine($"[dim]  |[/] [bold {severity}]{new string(' ', Math.Max(0, location.Column - 1))}^{new string('~', Math.Max(0, diagnostic.Span.Length - 1))}[/]");
+            }
+
+            if (!string.IsNullOrWhiteSpace(diagnostic.Help))
+            {
+                _console.MarkupLine($"[dim]  = help:[/] {Markup.Escape(diagnostic.Help)}");
+            }
+        }
+    }
+
+    public void PrintProcessOutput(ProcessResult result, bool raw)
+    {
+        if (!raw)
+        {
+            return;
+        }
+
+        foreach (var line in SplitLines(result.StandardOutput))
+        {
+            _console.MarkupLine($"[dim]dotnet:[/] {Markup.Escape(line)}");
+        }
+
+        foreach (var line in SplitLines(result.StandardError))
+        {
+            _console.MarkupLine($"[yellow]dotnet:[/] {Markup.Escape(line)}");
+        }
+    }
+
+    private static string[] SplitLines(string value) => value.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static string Highlight(string source)
+    {
+        var builder = new System.Text.StringBuilder();
+        for (var index = 0; index < source.Length;)
+        {
+            if (source[index] == '#')
+            {
+                builder.Append("[green]").Append(Markup.Escape(source[index..])).Append("[/]");
+                break;
+            }
+
+            if (source[index] == '"')
+            {
+                var end = index + 1;
+                while (end < source.Length && source[end] != '"')
+                {
+                    end++;
+                }
+
+                end = Math.Min(source.Length, end + 1);
+                builder.Append("[yellow]").Append(Markup.Escape(source[index..end])).Append("[/]");
+                index = end;
+                continue;
+            }
+
+            if (char.IsLetter(source[index]) || source[index] == '_')
+            {
+                var end = index + 1;
+                while (end < source.Length && (char.IsLetterOrDigit(source[end]) || source[end] == '_'))
+                {
+                    end++;
+                }
+
+                var token = source[index..end];
+                var style = token is "fn" or "let" or "var" or "return" or "if" or "else" or "for" or "in" or "record" or "class" or "struct" or "interface" or "public" or "ffi" or "include" or "implements"
+                    ? "blue"
+                    : "white";
+                builder.Append('[').Append(style).Append(']').Append(Markup.Escape(token)).Append("[/]");
+                index = end;
+                continue;
+            }
+
+            if (char.IsDigit(source[index]))
+            {
+                var end = index + 1;
+                while (end < source.Length && (char.IsDigit(source[end]) || source[end] == '.'))
+                {
+                    end++;
+                }
+
+                builder.Append("[aqua]").Append(Markup.Escape(source[index..end])).Append("[/]");
+                index = end;
+                continue;
+            }
+
+            builder.Append(Markup.Escape(source[index].ToString()));
+            index++;
+        }
+
+        return builder.ToString();
     }
 }

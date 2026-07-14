@@ -1,32 +1,36 @@
-fn main() -> Int:
-    var values = Vector<Int>(4)
-    values.append(7)
-    values.append(11)
-    values[0] = 9
+include vela.core;
 
-    var scores = HashMap<Text, Int>(4)
-    scores.set("Ada", 42)
-    scores["Grace"] = 36
+fn main() -> Int {
+    var values = Vector<Int>(4);
+    values.append(7);
+    values.append(11);
+    values[0] = 9;
 
-    var ids = HashSet<Int>()
-    print(ids.add(1))
+    var scores = HashMap<Text, Int>(4);
+    scores.set("Ada", 42);
+    scores["Grace"] = 36;
 
-    var queue = Queue<Int>()
-    queue.enqueue(5)
-    print(queue.dequeue().value)
+    var ids = HashSet<Int>();
+    print(ids.add(1));
 
-    var stack = Stack<Int>()
-    stack.push(8)
-    print(stack.pop().value)
+    var queue = Queue<Int>();
+    queue.enqueue(5);
+    print(queue.dequeue().value);
 
-    var ring = RingBuffer<Int>(2)
-    print(ring.try_enqueue(3))
+    var stack = Stack<Int>();
+    stack.push(8);
+    print(stack.pop().value);
 
-    var bits = BitSet(8)
-    bits.set(3)
-    print(bits.contains(3))
+    var ring = RingBuffer<Int>(2);
+    print(ring.try_enqueue(3));
 
-    for value in values:
-        print(value)
+    var bits = BitSet(8);
+    bits.set(3);
+    print(bits.contains(3));
 
-    return values.count
+    for value in values {
+        print(value);
+    }
+
+    return values.count;
+}

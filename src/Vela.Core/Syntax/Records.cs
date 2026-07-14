@@ -7,13 +7,11 @@ public sealed record RecordDeclarationSyntax(
     SyntaxToken RecordKeyword,
     SyntaxToken Identifier,
     IReadOnlyList<GenericParameterSyntax> GenericParameters,
-    SyntaxToken ColonToken,
-    SyntaxToken NewLineToken,
-    SyntaxToken IndentToken,
+    SyntaxToken LeftBrace,
     IReadOnlyList<RecordMemberSyntax> Members,
-    SyntaxToken DedentToken) : StatementSyntax
+    SyntaxToken RightBrace) : StatementSyntax
 {
-    public override TextSpan Span => TextSpan.FromBounds(RecordKeyword.Span.Start, DedentToken.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds(RecordKeyword.Span.Start, RightBrace.Span.End);
 }
 
 public abstract record RecordMemberSyntax : SyntaxNode;

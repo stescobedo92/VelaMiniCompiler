@@ -8,6 +8,10 @@ native shared-library artifacts, a safe and explicit binary ABI, classes,
 structs, interfaces, checked core types, nullable values, boxing, and a
 detailed build experience inspired by Cargo.
 
+> Grammar update: Vela uses C#/Java-style `{ ... }` blocks and requires `;` for
+> simple statements. All earlier indentation-and-colon examples are superseded
+> by the current language guide and checked examples.
+
 The design makes two promises that must not conflict:
 
 1. Vela source APIs are pleasant and strongly typed inside a package.
@@ -56,13 +60,14 @@ writes a deterministic `vela.lock`. A source file imports its manifest-declared
 dependencies explicitly:
 
 ```vela
-include vela.core
-include acme.math as math
+include vela.core;
+include acme.math as math;
 ```
 
-There is no implicit core prelude. `include vela.core` is mandatory for the
-core collection, text, conversion, error, and boxing APIs. This keeps the
-dependency graph visible and makes a package's public contract reproducible.
+`include vela.core;` is the explicit source marker for the compiler-supported
+core surface: collections, text, conversion, error, and boxing APIs. The
+current runtime intrinsics are linked into generated code; an independently
+published source-level `vela.core` package remains future work.
 
 ## Native artifacts and ABI
 
@@ -90,34 +95,29 @@ by source code at run time.
 An exported API must be written with `public ffi fn`:
 
 ```vela
-include vela.core
+include vela.core;
 
-public ffi fn add(left: Int, right: Int) -> Int:
-    left + right
+public ffi fn add(left: Int, right: Int) -> Int {
+    return left + right;
+}
 ```
 
-The ABI permits only these values:
+The current ABI exporter accepts `Bool`, `Int`, `UInt`, `Long`, `Float`,
+`Double`, `Decimal`, `Text`, and `Unit`. The current native import generator
+accepts the scalar subset `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and
+`Unit`. `Text` and `Decimal` use versioned wire values in the exported ABI but
+import-side marshalling is deferred. `Any`, `Array<T>`, collections, and user
+objects are not ABI parameters or results in this increment.
 
-- `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Decimal`.
-- `Text`, represented by a versioned core-owned UTF-8 value with explicit
-  ownership rules.
-- `Any`, `Array<T>`, and core collections as opaque, reference-counted core
-  handles.
-- `Unit` and explicit error/status values.
+No CLR object layout is part of the contract. `Decimal` crosses the exported
+ABI as Vela's four-word decimal wire value and `Text` as a versioned owned UTF-8
+wire value. The ABI manifest records the package, target, stable symbols, and a
+SHA-256 contract hash.
 
-No CLR object or CLR struct layout is part of the contract. `Decimal` crosses
-the ABI as Vela's documented four-word decimal wire value, `Text` as a
-versioned owned UTF-8 wire value, and handles as opaque native-sized values.
-The ABI manifest records the exact wire version for every exported argument and
-result.
-
-`public ffi fn` never lets a managed exception cross the native boundary. Its
-generated boundary catches Vela runtime exceptions, returns a status value,
-and makes the consumer rethrow the corresponding Vela exception with the
-original logical operation. Handle creation, retain, and release are owned by
-the single `vela.core` native runtime loaded by the process. This avoids
-allocator and object-layout mismatches between independently published
-libraries.
+`public ffi fn` exports stable C calling-convention symbols. The current ABI
+does not yet include a status/error channel, so exported functions should avoid
+operations that can throw across the boundary. A status-based exception contract
+and opaque core handles are deferred until the shared core runtime is present.
 
 Classes, structs, interfaces, generic user types, and records can be public in
 source packages, but are not legal FFI parameter or result types in this
@@ -134,30 +134,36 @@ Declarations are package-internal unless prefixed with `public`. Vela adds
 constructor in declaration order, and methods receive an implicit `self`.
 
 ```vela
-include vela.core
+include vela.core;
 
-public interface Printable:
-    fn render() -> Text
+public interface Printable {
+    fn render() -> Text;
+}
 
-public struct Point:
-    x: Int
-    y: Int
+public struct Point {
+    x: Int;
+    y: Int;
+}
 
-public class Counter implements Printable:
-    var value: Int
+public class Counter implements Printable {
+    var value: Int;
 
-    fn increment() -> Int:
-        self.value = self.value + 1
-        self.value
+    fn increment() -> Int {
+        self.value = self.value + 1;
+        return self.value;
+    }
 
-    fn render() -> Text:
-        Text.from_int(self.value)
+    fn render() -> Text {
+        return "Counter";
+    }
+}
 
-fn main() -> Int:
-    let point = Point(3, 4)
-    let counter = Counter(point.x)
-    print(counter.render())
-    0
+fn main() -> Int {
+    let point = Point(3, 4);
+    let counter = Counter(point.x);
+    print(counter.render());
+    return 0;
+}
 ```
 
 `struct` has value semantics and cannot be `null` unless it is declared
@@ -214,26 +220,27 @@ amortized O(1) append; its indexed operations use the same error model.
 `Any` is the type-erased core value used for boxing:
 
 ```vela
-include vela.core
+include vela.core;
 
-let boxed: Any = 42
-let value: Int = unbox<Int>(boxed)          # checked; invalid type throws
-let optional: Int? = try_unbox<Int>(boxed)  # mismatch becomes null
+let boxed: Any = 42;
+let value: Int = unbox<Int>(boxed);          # checked; invalid type throws
+let optional: Int? = try_unbox<Int>(boxed);  # mismatch becomes null
 ```
 
 Assignment of a primitive, `Text`, struct, or reference to `Any` boxes it.
 `unbox<T>` checks the exact Vela runtime type and throws
 `VelaInvalidCastException` on a mismatch. `try_unbox<T>` returns `T?` and
-does not throw for a type mismatch. Across a binary ABI, `Any` is an opaque
-core handle; no native package may inspect its private representation.
+does not throw for a type mismatch. `Any` currently remains package-local and
+cannot cross a native package boundary.
 
 ## Core as Vela source
 
-The standard library is an installed `vela.core` Vela package. Its public APIs
-are written in `.vela` files and imported using `include vela.core`. Low-level
-allocation, text encoding, checked numeric operations, handle lifetime, and
-native exports are compiler-recognized intrinsics implemented by the compact
-Native AOT support runtime. Thus users consume a Vela-defined core surface,
+The current standard surface is imported with `include vela.core;`. Low-level
+allocation, text encoding, checked numeric operations, and native ABI values
+are compiler-recognized intrinsics implemented by the compact Native AOT
+support runtime. A fully Vela-authored distributable core package is a planned
+next step; the present compiler exposes the same surface through the explicit
+include marker.
 while the compiler retains a safe implementation for platform primitives.
 
 Core exposes `Text`, `Array<T>`, `Any`, `Option<T>`, `Result<T, E>`, existing

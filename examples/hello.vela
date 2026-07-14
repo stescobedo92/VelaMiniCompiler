@@ -1,6 +1,9 @@
 # Run with: vela run examples/hello.vela
 
-fn main() -> Int:
-    let message: Text = "Hello, Vela!"
-    print(message)
-    0
+include vela.core;
+
+fn main() -> Int {
+    let message: Text = "Hello, Vela!";
+    print(message);
+    return 0;
+}

@@ -11,7 +11,6 @@ public sealed class VelaLexer
     private readonly SourceText _source;
     private readonly DiagnosticBag _diagnostics = new();
     private readonly List<SyntaxToken> _tokens = [];
-    private readonly Stack<int> _indentation = new([0]);
     private int _position;
     private bool _atLineStart = true;
 
@@ -75,12 +74,6 @@ public sealed class VelaLexer
             ScanPunctuation(start);
         }
 
-        while (_indentation.Count > 1)
-        {
-            _indentation.Pop();
-            _tokens.Add(new SyntaxToken(TokenKind.Dedent, new TextSpan(_position, 0), string.Empty));
-        }
-
         _tokens.Add(new SyntaxToken(TokenKind.EndOfFile, new TextSpan(_position, 0), string.Empty));
         return new LexResult(_tokens, _diagnostics.Items.ToArray());
     }
@@ -91,65 +84,9 @@ public sealed class VelaLexer
 
     private void ScanIndentation()
     {
-        var start = _position;
-        var width = 0;
-
         while (_position < _source.Length && (Current == ' ' || Current == '\t'))
         {
-            if (Current == '\t')
-            {
-                _diagnostics.ReportError(
-                    "L003",
-                    new TextSpan(_position, 1),
-                    "Tabs are not allowed for indentation.",
-                    "Use four spaces for each indentation level.");
-                width += 4;
-            }
-            else
-            {
-                width++;
-            }
-
             _position++;
-        }
-
-        if (_position >= _source.Length || IsLineBreakStart(Current) || StartsComment())
-        {
-            _atLineStart = false;
-            return;
-        }
-
-        if (width % 4 != 0)
-        {
-            _diagnostics.ReportError(
-                "L004",
-                new TextSpan(start, width),
-                "Indentation must be a multiple of four spaces.",
-                "Align this line with an existing block or use four-space indentation.");
-        }
-
-        var currentIndent = _indentation.Peek();
-        if (width > currentIndent)
-        {
-            _indentation.Push(width);
-            _tokens.Add(new SyntaxToken(TokenKind.Indent, new TextSpan(start, width), string.Empty));
-        }
-        else if (width < currentIndent)
-        {
-            while (_indentation.Count > 1 && width < _indentation.Peek())
-            {
-                _indentation.Pop();
-                _tokens.Add(new SyntaxToken(TokenKind.Dedent, new TextSpan(start, 0), string.Empty));
-            }
-
-            if (width != _indentation.Peek())
-            {
-                _diagnostics.ReportError(
-                    "L005",
-                    new TextSpan(start, width),
-                    "Indentation does not match any enclosing block.",
-                    "Use the same indentation as the block you want to continue.");
-            }
         }
 
         _atLineStart = false;
@@ -202,6 +139,14 @@ public sealed class VelaLexer
             "var" => TokenKind.VarKeyword,
             "fn" => TokenKind.FnKeyword,
             "record" => TokenKind.RecordKeyword,
+            "include" => TokenKind.IncludeKeyword,
+            "public" => TokenKind.PublicKeyword,
+            "ffi" => TokenKind.FfiKeyword,
+            "class" => TokenKind.ClassKeyword,
+            "struct" => TokenKind.StructKeyword,
+            "interface" => TokenKind.InterfaceKeyword,
+            "implements" => TokenKind.ImplementsKeyword,
+            "as" => TokenKind.AsKeyword,
             "return" => TokenKind.ReturnKeyword,
             "assert" => TokenKind.AssertKeyword,
             "if" => TokenKind.IfKeyword,
@@ -210,7 +155,7 @@ public sealed class VelaLexer
             "in" => TokenKind.InKeyword,
             "true" => TokenKind.TrueKeyword,
             "false" => TokenKind.FalseKeyword,
-            "nil" => TokenKind.NilKeyword,
+            "nil" or "null" => TokenKind.NilKeyword,
             _ => TokenKind.Identifier
         };
 
@@ -344,12 +289,15 @@ public sealed class VelaLexer
             '>' => (TokenKind.Greater, 1),
             ':' => (TokenKind.Colon, 1),
             ',' => (TokenKind.Comma, 1),
+            ';' => (TokenKind.Semicolon, 1),
             '.' => (TokenKind.Dot, 1),
             '?' => (TokenKind.Question, 1),
             '(' => (TokenKind.LeftParen, 1),
             ')' => (TokenKind.RightParen, 1),
             '[' => (TokenKind.LeftBracket, 1),
             ']' => (TokenKind.RightBracket, 1),
+            '{' => (TokenKind.LeftBrace, 1),
+            '}' => (TokenKind.RightBrace, 1),
             _ => (TokenKind.BadToken, 1)
         };
 

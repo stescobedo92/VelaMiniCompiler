@@ -34,7 +34,7 @@ public sealed class VelaBuildService
         try
         {
             var layout = WriteSourceProject(compilation, options with { OutputDirectory = stagingDirectory, RuntimeIdentifier = target.RuntimeIdentifier });
-            var arguments = CreatePublishArguments(layout, target.RuntimeIdentifier, options.Mode);
+            var arguments = CreatePublishArguments(layout, target.RuntimeIdentifier, options.Mode, options.ArtifactKind);
             var process = await RunDotnetAsync(arguments, layout.SourceDirectory, cancellationToken);
             if (process.ExitCode != 0)
             {
@@ -42,20 +42,60 @@ public sealed class VelaBuildService
             }
 
             var applicationName = SanitizeApplicationName(options.ApplicationName);
-            var executablePath = FindPrimaryExecutable(layout.PublishDirectory, applicationName);
-            if (executablePath is null)
+            var primaryArtifact = options.ArtifactKind == VelaArtifactKind.Application
+                ? FindPrimaryExecutable(layout.PublishDirectory, applicationName)
+                : FindPrimaryLibrary(layout.PublishDirectory, applicationName);
+            if (primaryArtifact is null)
             {
-                var message = $"The publish output did not contain the expected executable '{applicationName}' or '{applicationName}.exe'.";
+                var kind = options.ArtifactKind == VelaArtifactKind.Application ? "executable" : "shared library";
+                var message = $"The publish output did not contain the expected {kind} for '{applicationName}'.";
                 return new BuildResult(false, target.RuntimeIdentifier, null, process.StandardOutput, AppendError(process.StandardError, message));
             }
 
-            var finalExecutable = CommitPublishedArtifacts(layout.PublishDirectory, executablePath, options.OutputDirectory);
-            return new BuildResult(true, target.RuntimeIdentifier, finalExecutable, process.StandardOutput, process.StandardError);
+            var finalArtifact = CommitPublishedArtifacts(layout.PublishDirectory, primaryArtifact, options.OutputDirectory);
+            return options.ArtifactKind == VelaArtifactKind.Application
+                ? new BuildResult(true, target.RuntimeIdentifier, finalArtifact, process.StandardOutput, process.StandardError)
+                : new BuildResult(true, target.RuntimeIdentifier, null, process.StandardOutput, process.StandardError, finalArtifact);
         }
         finally
         {
             TryDeleteDirectory(stagingDirectory);
         }
+    }
+
+    /// <summary>Publishes a Vela library and writes its ABI manifest beside the native artifact.</summary>
+    public async Task<VelaLibraryBuildResult> BuildLibraryAsync(
+        VelaLibraryCompilation compilation,
+        BuildOptions options,
+        string packageVersion,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(compilation);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageVersion);
+        if (compilation.Compilation.HasErrors || compilation.Compilation.GeneratedSource is null)
+        {
+            throw new InvalidOperationException("Cannot build a library source that contains compiler errors.");
+        }
+
+        var build = await BuildAsync(
+            compilation.Compilation,
+            options with { ArtifactKind = VelaArtifactKind.SharedLibrary, Mode = ExecutableMode.NativeAot },
+            cancellationToken);
+        if (!build.Succeeded || build.LibraryPath is null)
+        {
+            return new VelaLibraryBuildResult(build, null);
+        }
+
+        var manifest = VelaAbiManifest.Create(
+            options.ApplicationName,
+            packageVersion,
+            build.RuntimeIdentifier,
+            Path.GetFileName(build.LibraryPath),
+            compilation.Exports);
+        var manifestPath = Path.Combine(Path.GetDirectoryName(build.LibraryPath)!, $"{SanitizeApplicationName(options.ApplicationName)}.velaabi.json");
+        manifest.Write(manifestPath);
+        return new VelaLibraryBuildResult(build, manifest);
     }
 
     public GeneratedProject WriteSourceProject(VelaCompilation compilation, BuildOptions options)
@@ -77,7 +117,7 @@ public sealed class VelaBuildService
         var sourcePath = Path.Combine(sourceDirectory, "Program.g.cs");
         var projectPath = Path.Combine(sourceDirectory, "Vela.Generated.csproj");
         File.WriteAllText(sourcePath, compilation.GeneratedSource);
-        File.WriteAllText(projectPath, CreateProjectFile(applicationName));
+        File.WriteAllText(projectPath, CreateProjectFile(applicationName, options.ArtifactKind));
         return new GeneratedProject(sourceDirectory, sourcePath, projectPath, publishDirectory);
     }
 
@@ -109,21 +149,52 @@ public sealed class VelaBuildService
         return null;
     }
 
-    private string CreateProjectFile(string applicationName)
+    /// <summary>Finds the platform-native library output without parsing a runtime identifier.</summary>
+    public static string? FindPrimaryLibrary(string publishDirectory, string applicationName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(publishDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(applicationName);
+
+        var sanitizedName = SanitizeApplicationName(applicationName);
+        foreach (var candidate in new[]
+        {
+            Path.Combine(publishDirectory, sanitizedName + ".dll"),
+            Path.Combine(publishDirectory, "lib" + sanitizedName + ".so"),
+            Path.Combine(publishDirectory, sanitizedName + ".so"),
+            Path.Combine(publishDirectory, "lib" + sanitizedName + ".dylib"),
+            Path.Combine(publishDirectory, sanitizedName + ".dylib")
+        })
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private string CreateProjectFile(string applicationName, VelaArtifactKind artifactKind)
     {
         var escapedRuntimePath = SecurityElement.Escape(_runtimeProjectPath) ?? throw new InvalidOperationException("Unable to escape the runtime project path.");
         var escapedApplicationName = SecurityElement.Escape(applicationName) ?? throw new InvalidOperationException("Unable to escape the application name.");
+        var outputType = artifactKind == VelaArtifactKind.SharedLibrary ? "Library" : "Exe";
+        var nativeLibraryProperty = artifactKind == VelaArtifactKind.SharedLibrary
+            ? "                   <NativeLib>Shared</NativeLib>" + Environment.NewLine
+            : string.Empty;
 
         return $"""
                <Project Sdk="Microsoft.NET.Sdk">
                  <PropertyGroup>
-                   <OutputType>Exe</OutputType>
+                   <OutputType>{outputType}</OutputType>
                    <TargetFramework>net10.0</TargetFramework>
                    <AssemblyName>{escapedApplicationName}</AssemblyName>
                    <Nullable>enable</Nullable>
                    <ImplicitUsings>enable</ImplicitUsings>
                    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
                    <IsAotCompatible>true</IsAotCompatible>
+                   <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+               {nativeLibraryProperty}
                  </PropertyGroup>
                  <ItemGroup>
                    <ProjectReference Include="{escapedRuntimePath}" />
@@ -132,7 +203,7 @@ public sealed class VelaBuildService
                """;
     }
 
-    private static List<string> CreatePublishArguments(GeneratedProject layout, string runtimeIdentifier, ExecutableMode mode)
+    private static List<string> CreatePublishArguments(GeneratedProject layout, string runtimeIdentifier, ExecutableMode mode, VelaArtifactKind artifactKind)
     {
         var arguments = new List<string>
         {
@@ -143,6 +214,17 @@ public sealed class VelaBuildService
             "--output", layout.PublishDirectory,
             "--nologo"
         };
+
+        if (artifactKind == VelaArtifactKind.SharedLibrary)
+        {
+            if (mode != ExecutableMode.NativeAot)
+            {
+                throw new InvalidOperationException("Vela shared libraries require the Native AOT publishing mode.");
+            }
+
+            arguments.AddRange(["--self-contained", "true", "-p:PublishAot=true", "-p:NativeLib=Shared", "-p:InvariantGlobalization=true"]);
+            return arguments;
+        }
 
         switch (mode)
         {
@@ -171,6 +253,7 @@ public sealed class VelaBuildService
 
         var primaryRelativePath = GetSafeRelativePath(normalizedPublishDirectory, executablePath);
         var stagedFiles = Directory.EnumerateFiles(normalizedPublishDirectory, "*", SearchOption.AllDirectories)
+            .Where(static file => IsRuntimeArtifact(file))
             .Select(file => new PublishedFile(file, GetSafeRelativePath(normalizedPublishDirectory, file)))
             .ToArray();
 
@@ -217,6 +300,13 @@ public sealed class VelaBuildService
         }
 
         return relativePath;
+    }
+
+    private static bool IsRuntimeArtifact(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return !string.Equals(extension, ".pdb", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string AppendError(string standardError, string message) => string.IsNullOrWhiteSpace(standardError)

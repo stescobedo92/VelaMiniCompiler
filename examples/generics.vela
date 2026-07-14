@@ -1,14 +1,19 @@
 # Run with: vela run examples/generics.vela
 
-record Pair<T>:
-    left: T
-    right: T
+include vela.core;
 
-fn first<T>(pair: Pair<T>) -> T:
-    pair.left
+record Pair<T> {
+    left: T;
+    right: T;
+}
 
-fn main() -> Int:
-    let pair = Pair<Int>(7, 11)
-    let value: Int = first(pair)
-    print(value)
-    0
+fn first<T>(pair: Pair<T>) -> T {
+    return pair.left;
+}
+
+fn main() -> Int {
+    let pair = Pair<Int>(7, 11);
+    let value: Int = first(pair);
+    print(value);
+    return 0;
+}

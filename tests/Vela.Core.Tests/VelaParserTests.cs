@@ -12,13 +12,15 @@ public sealed class VelaParserTests
     public void ParseGenericFunctionAndCallCapturesGenericSyntax()
     {
         const string code = """
-            record Box<T>:
-                value: T
+            record Box<T> {
+                value: T;
+            }
 
-            fn identity<T>(value: T) -> T:
-                return value
+            fn identity<T>(value: T) -> T {
+                return value;
+            }
 
-            var result: Box<Int> = Box<Int>(identity<Int>(1))
+            var result: Box<Int> = Box<Int>(identity<Int>(1));
             """;
 
         var result = VelaParser.Parse(new SourceText(code, "generic.vela"));
@@ -30,8 +32,7 @@ public sealed class VelaParserTests
         Assert.Equal("T", Assert.IsType<NamedTypeSyntax>(field.Type).Identifier.Text);
 
         var function = Assert.IsType<FunctionDeclarationSyntax>(result.Root.Members[1]);
-        var genericParameter = Assert.Single(function.GenericParameters);
-        Assert.Equal("T", genericParameter.Identifier.Text);
+        Assert.Equal("T", Assert.Single(function.GenericParameters).Identifier.Text);
         Assert.Equal("T", Assert.IsType<NamedTypeSyntax>(function.ReturnType).Identifier.Text);
 
         var variable = Assert.IsType<VarStatementSyntax>(result.Root.Members[2]);
@@ -39,28 +40,69 @@ public sealed class VelaParserTests
         Assert.Equal("Box", variableType.Identifier.Text);
         Assert.Equal("Int", Assert.IsType<NamedTypeSyntax>(Assert.Single(variableType.TypeArguments)).Identifier.Text);
         var call = Assert.IsType<CallExpressionSyntax>(variable.Initializer);
-        var typeArgument = Assert.IsType<NamedTypeSyntax>(Assert.Single(call.TypeArguments));
-        Assert.Equal("Int", typeArgument.Identifier.Text);
+        Assert.Equal("Int", Assert.IsType<NamedTypeSyntax>(Assert.Single(call.TypeArguments)).Identifier.Text);
     }
 
     [Fact]
-    public void ParseTwoSpaceIndentationReportsIndentationDiagnostic()
+    public void ParseBraceBlocksIgnoresLeadingWhitespace()
     {
-        const string code = "fn main() -> Int:\n  return 0\n";
-        var source = new SourceText(code, "indentation.vela");
+        const string code = "fn main() -> Int {\n  let value: Int = 1;\n    if value == 1 {\n print(value);\n    }\n  return 0;\n}\n";
 
-        var result = VelaParser.Parse(source);
+        var result = VelaParser.Parse(new SourceText(code, "braces.vela"));
 
-        var diagnostic = Assert.Single(result.Diagnostics, static item => item.Code == "L004");
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        Assert.Equal(3, function.Body.Statements.Count);
+        Assert.IsType<IfStatementSyntax>(function.Body.Statements[1]);
+    }
+
+    [Fact]
+    public void ParseMissingSemicolonReportsParserDiagnostic()
+    {
+        const string code = "fn main() -> Int {\n    let value: Int = 1\n    return value;\n}\n";
+
+        var result = VelaParser.Parse(new SourceText(code, "semicolon.vela"));
+
+        var diagnostic = Assert.Single(result.Diagnostics, static item => item.Code == "P002");
         Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
-        Assert.Equal(2, diagnostic.Span.Length);
-        Assert.Equal(new TextLocation("indentation.vela", 2, 1), source.GetLocation(diagnostic.Span));
+        Assert.Equal(new TextLocation("semicolon.vela", 2, 23), new SourceText(code, "semicolon.vela").GetLocation(diagnostic.Span));
+    }
+
+    [Fact]
+    public void ParseIncludeAndObjectDeclarationsCaptureBraceSyntax()
+    {
+        const string code = """
+            include vela.math as math;
+
+            interface Printable {
+                fn render() -> Text;
+            }
+
+            class Counter implements Printable {
+                var value: Int;
+                fn render() -> Text {
+                    return "Counter";
+                }
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "objects.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var include = Assert.IsType<IncludeDirectiveSyntax>(result.Root.Members[0]);
+        Assert.Equal("vela.math", include.PackageName);
+        Assert.Equal("math", include.Alias!.Text);
+        var contract = Assert.IsType<ObjectDeclarationSyntax>(result.Root.Members[1]);
+        Assert.Equal(ObjectDeclarationKind.Interface, contract.Kind);
+        var implementation = Assert.IsType<ObjectDeclarationSyntax>(result.Root.Members[2]);
+        Assert.Equal(ObjectDeclarationKind.Class, implementation.Kind);
+        Assert.Equal("Printable", Assert.IsType<NamedTypeSyntax>(Assert.Single(implementation.ImplementedInterfaces)).Identifier.Text);
     }
 
     [Fact]
     public void ParseInvalidCharacterReportsSourceMappedLexerDiagnostic()
     {
-        const string code = "let value = @";
+        const string code = "let value = @;";
         var source = new SourceText(code, "invalid-character.vela");
 
         var result = VelaParser.Parse(source);
@@ -77,13 +119,12 @@ public sealed class VelaParserTests
     [Fact]
     public void ParseMultipleIndependentErrorsRecoversAndContinuesParsing()
     {
-        const string code = "fn bad(value Int):\n  return @\nlet = 42\n";
+        const string code = "fn bad(value Int) {\n  return @;\n}\nlet = 42;\n";
 
         var result = VelaParser.Parse(new SourceText(code, "recovery.vela"));
 
         Assert.True(result.HasErrors);
         Assert.Equal(2, result.Root.Members.Count);
-        Assert.Contains(result.Diagnostics, static item => item.Code == "L004");
         Assert.Contains(result.Diagnostics, static item => item.Code == "L001");
         Assert.Contains(result.Diagnostics, static item => item.Code == "P001");
         Assert.Contains(result.Diagnostics, static item => item.Code == "P004");
@@ -92,7 +133,7 @@ public sealed class VelaParserTests
     [Fact]
     public void ParseAssertionCapturesConditionAndMessage()
     {
-        const string code = "fn main() -> Int:\n    assert 4 > 0, \"positive\"\n    return 0\n";
+        const string code = "fn main() -> Int {\n    assert 4 > 0, \"positive\";\n    return 0;\n}\n";
 
         var result = VelaParser.Parse(new SourceText(code, "assertion.vela"));
 
@@ -107,7 +148,7 @@ public sealed class VelaParserTests
     [Fact]
     public void ParseCollectionsCapturesGenericConstructionIndexingAndIteration()
     {
-        const string code = "fn main() -> Int:\n    var values = Vector<Int>(4)\n    values[0] = 7\n    for value in values:\n        print(value)\n    return 0\n";
+        const string code = "fn main() -> Int {\n    var values = Vector<Int>(4);\n    values[0] = 7;\n    for value in values {\n        print(value);\n    }\n    return 0;\n}\n";
 
         var result = VelaParser.Parse(new SourceText(code, "collections.vela"));
 

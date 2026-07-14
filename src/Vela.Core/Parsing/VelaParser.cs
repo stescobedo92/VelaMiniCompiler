@@ -34,17 +34,6 @@ public sealed class VelaParser
                 break;
             }
 
-            if (Current.Kind == TokenKind.Dedent)
-            {
-                _diagnostics.ReportError(
-                    "P003",
-                    Current.Span,
-                    "Unexpected dedent outside a block.",
-                    "Remove this indentation change or add the enclosing block.");
-                NextToken();
-                continue;
-            }
-
             members.Add(ParseStatement());
         }
 
@@ -54,16 +43,65 @@ public sealed class VelaParser
 
     private StatementSyntax ParseStatement() => Current.Kind switch
     {
+        TokenKind.IncludeKeyword => ParseIncludeDirective(),
+        TokenKind.PublicKeyword => ParsePublicDeclaration(),
         TokenKind.LetKeyword => ParseLetStatement(),
         TokenKind.VarKeyword => ParseVarStatement(),
         TokenKind.FnKeyword => ParseFunctionDeclaration(),
         TokenKind.RecordKeyword => ParseRecordDeclaration(),
+        TokenKind.ClassKeyword or TokenKind.StructKeyword or TokenKind.InterfaceKeyword => ParseObjectDeclaration(null),
         TokenKind.ReturnKeyword => ParseReturnStatement(),
         TokenKind.AssertKeyword => ParseAssertStatement(),
         TokenKind.IfKeyword => ParseIfStatement(),
         TokenKind.ForKeyword => ParseForStatement(),
         _ => ParseExpressionStatement()
     };
+
+    private StatementSyntax ParsePublicDeclaration()
+    {
+        var publicKeyword = Match(TokenKind.PublicKeyword);
+        if (Current.Kind == TokenKind.FfiKeyword || Current.Kind == TokenKind.FnKeyword)
+        {
+            var ffiKeyword = Current.Kind == TokenKind.FfiKeyword ? NextToken() : null;
+            return ParseFunctionDeclaration(publicKeyword, ffiKeyword);
+        }
+
+        if (Current.Kind is TokenKind.ClassKeyword or TokenKind.StructKeyword or TokenKind.InterfaceKeyword)
+        {
+            return ParseObjectDeclaration(publicKeyword);
+        }
+
+        _diagnostics.ReportError(
+            "P007",
+            Current.Span,
+            "The 'public' modifier must declare a function, class, struct, or interface.",
+            "Use 'public fn', 'public ffi fn', 'public class', 'public struct', or 'public interface'.");
+        SynchronizeToStatementBoundary();
+        return new ExpressionStatementSyntax(new LiteralExpressionSyntax(SyntaxToken.Missing(TokenKind.Identifier, publicKeyword.Span.End)));
+    }
+
+    private IncludeDirectiveSyntax ParseIncludeDirective()
+    {
+        var include = Match(TokenKind.IncludeKeyword);
+        var segments = new List<SyntaxToken> { Match(TokenKind.Identifier) };
+        var dots = new List<SyntaxToken>();
+        while (Current.Kind == TokenKind.Dot)
+        {
+            dots.Add(NextToken());
+            segments.Add(Match(TokenKind.Identifier));
+        }
+
+        SyntaxToken? asKeyword = null;
+        SyntaxToken? alias = null;
+        if (Current.Kind == TokenKind.AsKeyword)
+        {
+            asKeyword = NextToken();
+            alias = Match(TokenKind.Identifier);
+        }
+
+        ConsumeStatementTerminator();
+        return new IncludeDirectiveSyntax(include, segments, dots, asKeyword, alias);
+    }
 
     private LetStatementSyntax ParseLetStatement()
     {
@@ -87,7 +125,7 @@ public sealed class VelaParser
         return new VarStatementSyntax(keyword, identifier, colon, type, equals, initializer);
     }
 
-    private FunctionDeclarationSyntax ParseFunctionDeclaration()
+    private FunctionDeclarationSyntax ParseFunctionDeclaration(SyntaxToken? publicKeyword = null, SyntaxToken? ffiKeyword = null)
     {
         var keyword = Match(TokenKind.FnKeyword);
         var identifier = Match(TokenKind.Identifier);
@@ -103,9 +141,10 @@ public sealed class VelaParser
             returnType = ParseType();
         }
 
-        var colon = Match(TokenKind.Colon);
         var body = ParseBlock();
         return new FunctionDeclarationSyntax(
+            publicKeyword,
+            ffiKeyword,
             keyword,
             identifier,
             genericParameters,
@@ -114,8 +153,101 @@ public sealed class VelaParser
             rightParenthesis,
             arrow,
             returnType,
-            colon,
+            body.LeftBrace,
             body);
+    }
+
+    private ObjectDeclarationSyntax ParseObjectDeclaration(SyntaxToken? publicKeyword)
+    {
+        var keyword = NextToken();
+        var kind = keyword.Kind switch
+        {
+            TokenKind.ClassKeyword => ObjectDeclarationKind.Class,
+            TokenKind.StructKeyword => ObjectDeclarationKind.Struct,
+            TokenKind.InterfaceKeyword => ObjectDeclarationKind.Interface,
+            _ => throw new InvalidOperationException("Expected an object declaration keyword.")
+        };
+        var identifier = Match(TokenKind.Identifier);
+        var genericParameters = ParseOptionalGenericParameters();
+        SyntaxToken? implementsKeyword = null;
+        var implementedInterfaces = new List<TypeSyntax>();
+        if (Current.Kind == TokenKind.ImplementsKeyword)
+        {
+            implementsKeyword = NextToken();
+            do
+            {
+                implementedInterfaces.Add(ParseType());
+                if (Current.Kind != TokenKind.Comma)
+                {
+                    break;
+                }
+
+                NextToken();
+            }
+            while (Current.Kind is not TokenKind.LeftBrace and not TokenKind.EndOfFile);
+        }
+
+        var leftBrace = Match(TokenKind.LeftBrace);
+        SkipNewLines();
+        var members = new List<ObjectMemberSyntax>();
+        while (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile)
+        {
+            SkipNewLines();
+            if (Current.Kind is TokenKind.RightBrace or TokenKind.EndOfFile)
+            {
+                break;
+            }
+
+            members.Add(kind == ObjectDeclarationKind.Interface ? ParseInterfaceMember() : ParseObjectMember());
+        }
+
+        var rightBrace = Match(TokenKind.RightBrace);
+        return new ObjectDeclarationSyntax(
+            publicKeyword,
+            keyword,
+            kind,
+            identifier,
+            genericParameters,
+            implementsKeyword,
+            implementedInterfaces,
+            leftBrace,
+            members,
+            rightBrace);
+    }
+
+    private ObjectMemberSyntax ParseObjectMember()
+    {
+        if (Current.Kind == TokenKind.FnKeyword)
+        {
+            return new ObjectMethodSyntax(ParseFunctionDeclaration());
+        }
+
+        var varKeyword = Current.Kind == TokenKind.VarKeyword ? NextToken() : null;
+        var identifier = Match(TokenKind.Identifier);
+        var colon = Match(TokenKind.Colon);
+        var type = ParseType();
+        ConsumeStatementTerminator();
+        return new ObjectFieldSyntax(varKeyword, identifier, colon, type);
+    }
+
+    private InterfaceMethodSyntax ParseInterfaceMember()
+    {
+        var fn = Match(TokenKind.FnKeyword);
+        var identifier = Match(TokenKind.Identifier);
+        var genericParameters = ParseOptionalGenericParameters();
+        var left = Match(TokenKind.LeftParen);
+        var parameters = ParseParameters();
+        var right = Match(TokenKind.RightParen);
+        SyntaxToken? arrow = null;
+        TypeSyntax? returnType = null;
+        if (Current.Kind == TokenKind.Arrow)
+        {
+            arrow = NextToken();
+            returnType = ParseType();
+        }
+
+        ConsumeStatementTerminator();
+        return new InterfaceMethodSyntax(fn, identifier, genericParameters, left, parameters, right, arrow, returnType);
     }
 
     private RecordDeclarationSyntax ParseRecordDeclaration()
@@ -123,16 +255,14 @@ public sealed class VelaParser
         var keyword = Match(TokenKind.RecordKeyword);
         var identifier = Match(TokenKind.Identifier);
         var genericParameters = ParseOptionalGenericParameters();
-        var colon = Match(TokenKind.Colon);
-        var newLine = Match(TokenKind.NewLine);
+        var leftBrace = Match(TokenKind.LeftBrace);
         SkipNewLines();
-        var indent = Match(TokenKind.Indent);
         var members = new List<RecordMemberSyntax>();
 
-        while (Current.Kind is not TokenKind.Dedent and not TokenKind.EndOfFile)
+        while (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile)
         {
             SkipNewLines();
-            if (Current.Kind is TokenKind.Dedent or TokenKind.EndOfFile)
+            if (Current.Kind is TokenKind.RightBrace or TokenKind.EndOfFile)
             {
                 break;
             }
@@ -140,8 +270,8 @@ public sealed class VelaParser
             members.Add(ParseRecordMember());
         }
 
-        var dedent = Match(TokenKind.Dedent);
-        return new RecordDeclarationSyntax(keyword, identifier, genericParameters, colon, newLine, indent, members, dedent);
+        var rightBrace = Match(TokenKind.RightBrace);
+        return new RecordDeclarationSyntax(keyword, identifier, genericParameters, leftBrace, members, rightBrace);
     }
 
     private RecordMemberSyntax ParseRecordMember()
@@ -174,7 +304,7 @@ public sealed class VelaParser
     {
         var keyword = Match(TokenKind.ReturnKeyword);
         ExpressionSyntax? expression = null;
-        if (Current.Kind is not TokenKind.NewLine and not TokenKind.Dedent and not TokenKind.EndOfFile)
+        if (Current.Kind is not TokenKind.NewLine and not TokenKind.Semicolon and not TokenKind.RightBrace and not TokenKind.EndOfFile)
         {
             expression = ParseExpression();
         }
@@ -203,19 +333,18 @@ public sealed class VelaParser
     {
         var keyword = Match(TokenKind.IfKeyword);
         var condition = ParseExpression();
-        var colon = Match(TokenKind.Colon);
         var thenBlock = ParseBlock();
         ElseClauseSyntax? elseClause = null;
 
+        SkipNewLines();
         if (Current.Kind == TokenKind.ElseKeyword)
         {
             var elseKeyword = NextToken();
-            var elseColon = Match(TokenKind.Colon);
             var elseBlock = ParseBlock();
-            elseClause = new ElseClauseSyntax(elseKeyword, elseColon, elseBlock);
+            elseClause = new ElseClauseSyntax(elseKeyword, elseBlock.LeftBrace, elseBlock);
         }
 
-        return new IfStatementSyntax(keyword, condition, colon, thenBlock, elseClause);
+        return new IfStatementSyntax(keyword, condition, thenBlock.LeftBrace, thenBlock, elseClause);
     }
 
     private ForStatementSyntax ParseForStatement()
@@ -224,9 +353,8 @@ public sealed class VelaParser
         var identifier = Match(TokenKind.Identifier);
         var inKeyword = Match(TokenKind.InKeyword);
         var collection = ParseExpression();
-        var colon = Match(TokenKind.Colon);
         var body = ParseBlock();
-        return new ForStatementSyntax(keyword, identifier, inKeyword, collection, colon, body);
+        return new ForStatementSyntax(keyword, identifier, inKeyword, collection, body.LeftBrace, body);
     }
 
     private ExpressionStatementSyntax ParseExpressionStatement()
@@ -238,15 +366,14 @@ public sealed class VelaParser
 
     private BlockSyntax ParseBlock()
     {
-        var newLine = Match(TokenKind.NewLine);
+        var leftBrace = Match(TokenKind.LeftBrace);
         SkipNewLines();
-        var indent = Match(TokenKind.Indent);
         var statements = new List<StatementSyntax>();
 
-        while (Current.Kind is not TokenKind.Dedent and not TokenKind.EndOfFile)
+        while (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile)
         {
             SkipNewLines();
-            if (Current.Kind is TokenKind.Dedent or TokenKind.EndOfFile)
+            if (Current.Kind is TokenKind.RightBrace or TokenKind.EndOfFile)
             {
                 break;
             }
@@ -254,8 +381,8 @@ public sealed class VelaParser
             statements.Add(ParseStatement());
         }
 
-        var dedent = Match(TokenKind.Dedent);
-        return new BlockSyntax(newLine, indent, statements, dedent);
+        var rightBrace = Match(TokenKind.RightBrace);
+        return new BlockSyntax(leftBrace, statements, rightBrace);
     }
 
     private List<GenericParameterSyntax> ParseOptionalGenericParameters()
@@ -378,13 +505,13 @@ public sealed class VelaParser
 
         var equals = NextToken();
         var value = ParseAssignmentExpression();
-        if (target is not NameExpressionSyntax and not IndexExpressionSyntax)
+        if (target is not NameExpressionSyntax and not IndexExpressionSyntax and not MemberAccessExpressionSyntax)
         {
             _diagnostics.ReportError(
                 "P006",
                 target.Span,
-                "The left side of an assignment must be a variable name or an indexed collection.",
-                "Assign to a name declared with 'var' or an indexed collection element.");
+                "The left side of an assignment must be a variable name, mutable field, or indexed collection.",
+                "Assign to a variable declared with 'var', a mutable field, or an indexed collection element.");
         }
 
         return new AssignmentExpressionSyntax(target, equals, value);
@@ -588,14 +715,10 @@ public sealed class VelaParser
 
     private void ConsumeStatementTerminator()
     {
-        if (Current.Kind == TokenKind.NewLine)
+        if (Current.Kind == TokenKind.Semicolon)
         {
+            NextToken();
             SkipNewLines();
-            return;
-        }
-
-        if (Current.Kind is TokenKind.Dedent or TokenKind.EndOfFile)
-        {
             return;
         }
 
@@ -603,13 +726,18 @@ public sealed class VelaParser
             "P002",
             Current.Span,
             "Expected the end of the statement.",
-            "Place the next statement on a new line.");
+            "Terminate this statement with ';'.");
         SynchronizeToStatementBoundary();
     }
 
     private void SynchronizeToStatementBoundary()
     {
-        while (Current.Kind is not TokenKind.NewLine and not TokenKind.Dedent and not TokenKind.EndOfFile)
+        while (Current.Kind is not TokenKind.NewLine and not TokenKind.Semicolon and not TokenKind.RightBrace and not TokenKind.EndOfFile)
+        {
+            NextToken();
+        }
+
+        if (Current.Kind == TokenKind.Semicolon)
         {
             NextToken();
         }
@@ -667,8 +795,9 @@ public sealed class VelaParser
     private static string GetDisplayText(TokenKind kind) => kind switch
     {
         TokenKind.NewLine => "a new line",
-        TokenKind.Indent => "an indented block",
-        TokenKind.Dedent => "the end of an indented block",
+        TokenKind.Semicolon => "';'",
+        TokenKind.LeftBrace => "'{'",
+        TokenKind.RightBrace => "'}'",
         TokenKind.Identifier => "an identifier",
         TokenKind.EndOfFile => "the end of the file",
         _ => kind.ToString()

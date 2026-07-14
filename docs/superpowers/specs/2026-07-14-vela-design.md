@@ -3,6 +3,8 @@
 > Historical initial-release design. Host-native publishing and collection
 > behavior are superseded by
 > [the host-native collections design](2026-07-14-host-native-collections-design.md).
+> The original indentation grammar is superseded by the brace-and-semicolon
+> grammar documented in [the language guide](../../Vela-language.md).
 
 ## Scope
 

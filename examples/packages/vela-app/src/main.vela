@@ -1,0 +1,8 @@
+include vela.core;
+include vela.math as math;
+
+fn main() -> Int {
+    let answer = math.add(40, 2);
+    print(answer);
+    return 0;
+}

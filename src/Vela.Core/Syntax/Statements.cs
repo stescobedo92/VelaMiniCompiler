@@ -28,6 +28,8 @@ public sealed record VarStatementSyntax(
 }
 
 public sealed record FunctionDeclarationSyntax(
+    SyntaxToken? PublicKeyword,
+    SyntaxToken? FfiKeyword,
     SyntaxToken FnKeyword,
     SyntaxToken Identifier,
     IReadOnlyList<GenericParameterSyntax> GenericParameters,
@@ -36,10 +38,10 @@ public sealed record FunctionDeclarationSyntax(
     SyntaxToken RightParenthesis,
     SyntaxToken? ArrowToken,
     TypeSyntax? ReturnType,
-    SyntaxToken ColonToken,
+    SyntaxToken LeftBrace,
     BlockSyntax Body) : StatementSyntax
 {
-    public override TextSpan Span => TextSpan.FromBounds(FnKeyword.Span.Start, Body.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? FfiKeyword ?? FnKeyword).Span.Start, Body.Span.End);
 }
 
 public sealed record ReturnStatementSyntax(
@@ -65,7 +67,7 @@ public sealed record AssertStatementSyntax(
 public sealed record IfStatementSyntax(
     SyntaxToken IfKeyword,
     ExpressionSyntax Condition,
-    SyntaxToken ColonToken,
+    SyntaxToken LeftBrace,
     BlockSyntax ThenBlock,
     ElseClauseSyntax? ElseClause) : StatementSyntax
 {
@@ -77,7 +79,7 @@ public sealed record ForStatementSyntax(
     SyntaxToken Identifier,
     SyntaxToken InKeyword,
     ExpressionSyntax Collection,
-    SyntaxToken ColonToken,
+    SyntaxToken LeftBrace,
     BlockSyntax Body) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds(ForKeyword.Span.Start, Body.Span.End);
@@ -85,7 +87,7 @@ public sealed record ForStatementSyntax(
 
 public sealed record ElseClauseSyntax(
     SyntaxToken ElseKeyword,
-    SyntaxToken ColonToken,
+    SyntaxToken LeftBrace,
     BlockSyntax Block) : SyntaxNode
 {
     public override TextSpan Span => TextSpan.FromBounds(ElseKeyword.Span.Start, Block.Span.End);
@@ -97,10 +99,9 @@ public sealed record ExpressionStatementSyntax(ExpressionSyntax Expression) : St
 }
 
 public sealed record BlockSyntax(
-    SyntaxToken NewLineToken,
-    SyntaxToken IndentToken,
+    SyntaxToken LeftBrace,
     IReadOnlyList<StatementSyntax> Statements,
-    SyntaxToken DedentToken) : SyntaxNode
+    SyntaxToken RightBrace) : SyntaxNode
 {
-    public override TextSpan Span => TextSpan.FromBounds(NewLineToken.Span.Start, DedentToken.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds(LeftBrace.Span.Start, RightBrace.Span.End);
 }
