@@ -18,6 +18,7 @@ public enum TokenKind
     FnKeyword,
     RecordKeyword,
     ReturnKeyword,
+    AssertKeyword,
     IfKeyword,
     ElseKeyword,
     TrueKeyword,

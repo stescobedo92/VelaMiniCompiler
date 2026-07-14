@@ -88,4 +88,19 @@ public sealed class VelaParserTests
         Assert.Contains(result.Diagnostics, static item => item.Code == "P001");
         Assert.Contains(result.Diagnostics, static item => item.Code == "P004");
     }
+
+    [Fact]
+    public void ParseAssertionCapturesConditionAndMessage()
+    {
+        const string code = "fn main() -> Int:\n    assert 4 > 0, \"positive\"\n    return 0\n";
+
+        var result = VelaParser.Parse(new SourceText(code, "assertion.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        var assertion = Assert.IsType<AssertStatementSyntax>(function.Body.Statements[0]);
+        Assert.IsType<BinaryExpressionSyntax>(assertion.Condition);
+        var message = Assert.IsType<LiteralExpressionSyntax>(assertion.Message);
+        Assert.Equal("positive", message.LiteralToken.Value);
+    }
 }

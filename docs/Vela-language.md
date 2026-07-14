@@ -56,6 +56,19 @@ fn max(left: Int, right: Int) -> Int:
 The compiler rejects inconsistent indentation, missing block bodies, and code
 after a returned value when it is provably unreachable.
 
+## Contracts with `assert`
+
+`assert` makes an executable requirement explicit. It accepts a Boolean
+condition and an optional `Text` message. A failed assertion throws a managed
+`VelaContractException`, and generated source retains line mapping to the
+original `.vela` file.
+
+```vela
+fn divide(total: Int, parts: Int) -> Int:
+    assert parts != 0, "parts must not be zero"
+    total / parts
+```
+
 ## Generic records and functions
 
 Records are declared with `record Name<T>:`. Generic parameters are compile-time

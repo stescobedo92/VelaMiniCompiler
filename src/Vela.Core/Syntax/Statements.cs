@@ -51,6 +51,17 @@ public sealed record ReturnStatementSyntax(
         : TextSpan.FromBounds(ReturnKeyword.Span.Start, Expression.Span.End);
 }
 
+public sealed record AssertStatementSyntax(
+    SyntaxToken AssertKeyword,
+    ExpressionSyntax Condition,
+    SyntaxToken? CommaToken,
+    ExpressionSyntax? Message) : StatementSyntax
+{
+    public override TextSpan Span => Message is null
+        ? TextSpan.FromBounds(AssertKeyword.Span.Start, Condition.Span.End)
+        : TextSpan.FromBounds(AssertKeyword.Span.Start, Message.Span.End);
+}
+
 public sealed record IfStatementSyntax(
     SyntaxToken IfKeyword,
     ExpressionSyntax Condition,

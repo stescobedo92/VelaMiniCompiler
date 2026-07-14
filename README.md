@@ -12,6 +12,7 @@ own: it borrows familiar ideas without trying to be source-compatible with C#.
 - Generic functions and records with managed `List<T>`, `Option<T>`, and `Result<T, E>` runtime values.
 - Source-aware diagnostics with error codes, locations, excerpts, and guidance.
 - Managed .NET object lifetime with garbage collection and no raw pointers or manual freeing.
+- Source-level assertions backed by the managed contract runtime.
 - A compiler pipeline that can generate C# source and publish a self-contained
   Windows executable.
 
@@ -72,7 +73,7 @@ separately installed .NET runtime.
 
 Read [the Vela language guide](docs/Vela-language.md) for the syntax and semantic
 rules. The [examples](examples) directory contains runnable programs for a basic
-entry point, generic records, managed allocations, and compiler diagnostics.
+entry point, generic records, managed allocations, contract assertions, and compiler diagnostics.
 
 ## Status
 

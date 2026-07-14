@@ -1,0 +1,9 @@
+# Run with: vela run examples/contracts.vela
+
+fn divide(total: Int, parts: Int) -> Int:
+    assert parts != 0, "parts must not be zero"
+    total / parts
+
+fn main() -> Int:
+    print(divide(42, 6))
+    0

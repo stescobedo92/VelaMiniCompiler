@@ -243,6 +243,9 @@ internal sealed class CSharpEmitter
             case ReturnStatementSyntax returnStatement:
                 EmitReturn(returnStatement, scope, returnType);
                 return true;
+            case AssertStatementSyntax assertion:
+                EmitAssert(assertion, scope);
+                return false;
             case ExpressionStatementSyntax expressionStatement:
                 return EmitExpressionStatement(expressionStatement.Expression, scope, returnType, isTail);
             case IfStatementSyntax conditional:
@@ -284,6 +287,21 @@ internal sealed class CSharpEmitter
         var expression = EmitExpression(statement.Expression, scope);
         EnsureAssignable(returnType, expression.Type, statement.Expression.Span);
         _writer.WriteLine($"return {expression.Code};");
+    }
+
+    private void EmitAssert(AssertStatementSyntax assertion, Scope scope)
+    {
+        var condition = EmitExpression(assertion.Condition, scope);
+        EnsureAssignable(VelaType.Bool, condition.Type, assertion.Condition.Span);
+        var messageCode = QuoteString("Vela assertion failed.");
+        if (assertion.Message is not null)
+        {
+            var messageExpression = EmitExpression(assertion.Message, scope);
+            EnsureAssignable(VelaType.Text, messageExpression.Type, assertion.Message.Span);
+            messageCode = messageExpression.Code;
+        }
+
+        _writer.WriteLine($"Contract.Require({condition.Code}, {messageCode});");
     }
 
     private bool EmitExpressionStatement(ExpressionSyntax expression, Scope scope, VelaType returnType, bool isTail)

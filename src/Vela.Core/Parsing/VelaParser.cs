@@ -59,6 +59,7 @@ public sealed class VelaParser
         TokenKind.FnKeyword => ParseFunctionDeclaration(),
         TokenKind.RecordKeyword => ParseRecordDeclaration(),
         TokenKind.ReturnKeyword => ParseReturnStatement(),
+        TokenKind.AssertKeyword => ParseAssertStatement(),
         TokenKind.IfKeyword => ParseIfStatement(),
         _ => ParseExpressionStatement()
     };
@@ -179,6 +180,22 @@ public sealed class VelaParser
 
         ConsumeStatementTerminator();
         return new ReturnStatementSyntax(keyword, expression);
+    }
+
+    private AssertStatementSyntax ParseAssertStatement()
+    {
+        var keyword = Match(TokenKind.AssertKeyword);
+        var condition = ParseExpression();
+        SyntaxToken? comma = null;
+        ExpressionSyntax? message = null;
+        if (Current.Kind == TokenKind.Comma)
+        {
+            comma = NextToken();
+            message = ParseExpression();
+        }
+
+        ConsumeStatementTerminator();
+        return new AssertStatementSyntax(keyword, condition, comma, message);
     }
 
     private IfStatementSyntax ParseIfStatement()

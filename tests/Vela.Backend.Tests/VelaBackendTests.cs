@@ -118,6 +118,18 @@ public sealed class VelaBackendTests
     }
 
     [Fact]
+    public void CompileAssertionEmitsManagedContractCheck()
+    {
+        const string code = "fn main() -> Int:\n    assert 2 > 0, \"positive\"\n    return 0\n";
+
+        var compilation = Compile(code, "assertion.vela");
+
+        Assert.False(compilation.HasErrors);
+        Assert.NotNull(compilation.GeneratedSource);
+        Assert.Contains("Contract.Require(2L > 0L, \"positive\");", compilation.GeneratedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void WriteSourceProjectCreatesExpectedFrameworkDependentLayout()
     {
         const string code = """

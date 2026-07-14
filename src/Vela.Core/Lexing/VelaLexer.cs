@@ -203,6 +203,7 @@ public sealed class VelaLexer
             "fn" => TokenKind.FnKeyword,
             "record" => TokenKind.RecordKeyword,
             "return" => TokenKind.ReturnKeyword,
+            "assert" => TokenKind.AssertKeyword,
             "if" => TokenKind.IfKeyword,
             "else" => TokenKind.ElseKeyword,
             "true" => TokenKind.TrueKeyword,
