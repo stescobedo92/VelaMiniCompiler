@@ -1,0 +1,34 @@
+// Run with: vela run examples/control-flow.vela
+
+include vela.core;
+
+fn main() -> Int {
+    var index: Int = 0;
+    var total: Int = 0;
+
+    while index < 10 {
+        index = index + 1;
+        if index == 3 {
+            continue;
+        }
+        if index == 8 {
+            break;
+        }
+        total = total + index;
+    }
+
+    switch total {
+        case 25 {
+            print("loop completed with expected total");
+        }
+        case 0 {
+            print("no values processed");
+        }
+        default {
+            print("unexpected total");
+        }
+    }
+
+    print(total);
+    return 0;
+}

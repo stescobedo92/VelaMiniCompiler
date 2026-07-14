@@ -65,6 +65,35 @@ for value in values {
 }
 ```
 
+`while`, `break`, `continue`, and `switch` add compact imperative control flow.
+`break` and `continue` apply only to the nearest `while` or `for`. Switch cases
+are isolated brace blocks; they do not fall through and do not require `break`.
+
+```vela
+var index: Int = 0;
+while index < 10 {
+    index = index + 1;
+    if index == 3 {
+        continue;
+    }
+    if index == 8 {
+        break;
+    }
+}
+
+switch index {
+    case 8 {
+        print("stopped");
+    }
+    default {
+        print("other");
+    }
+}
+```
+
+Switch subjects and literal cases support `Int`, `UInt`, `Long`, `Bool`, and
+`Text`. The compiler rejects duplicate case values and multiple `default` blocks.
+
 ## Classes, structs, interfaces, records, and generics
 
 Vela supports reference classes, value structs, interfaces, records, generic
@@ -145,10 +174,44 @@ fn main() -> Int {
 decimal, objects, arrays, and collections are intentionally not passed across
 the ABI boundary yet.
 
+## Explicit core modules
+
+Core modules are opt-in imports and are trimmed from programs that do not call
+them. Their aliases default to the final module name.
+
+| Import | Representative operations |
+| --- | --- |
+| `vela.core.json` | `is_valid`, `compact`, `pretty`, `try_get_text/int/bool` |
+| `vela.core.crypto` | `sha256`, `hmac_sha256`, fixed-time comparison, random hex |
+| `vela.core.tcp` | bounded synchronous connect, send, receive, close |
+| `vela.core.text` | ordinal search, trim, invariant casing, checked slice |
+| `vela.core.math` | `abs`, `min`, `max`, `clamp`, `sqrt`, `pow` |
+| `vela.core.time` | UTC milliseconds and monotonic timing |
+| `vela.core.random` | fast integer and double random values |
+| `vela.core.io` | UTF-8 file existence, read, write, append |
+| `vela.core.encoding` | UTF-8 byte count, hexadecimal and Base64 conversion |
+| `vela.core.env` | environment variables, process arguments, current directory |
+
+```vela
+include vela.core.json;
+include vela.core.crypto;
+
+fn main() -> Int {
+    let payload = json.compact("{ \"id\": 42 }");
+    let signature = crypto.hmac_sha256("secret", payload);
+    print(signature);
+    return 0;
+}
+```
+
+Network and file failures are reported as source-aware Vela runtime exceptions.
+TCP is deliberately synchronous in this release and should be used with a
+bounded timeout and receive size.
+
 ## Diagnostics and build output
 
-`vela check` reports source locations, codes, snippets, and colored syntax when
-the terminal supports it. `vela build` prints phase-level progress by default.
+`vela check` reports source locations, codes, snippets, and colored syntax in
+interactive terminals. `vela build` prints phase-level progress by default.
 Use `--quiet` to suppress normal progress, `--color never` for plain output, and
 `-vv` to reveal raw .NET Native AOT publishing output.
 

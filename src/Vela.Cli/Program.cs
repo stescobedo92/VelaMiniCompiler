@@ -103,7 +103,8 @@ internal static class VelaCommandLine
                 compilation,
                 new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
             var result = await VelaBuildService.RunGeneratedProjectAsync(generatedProject);
-            renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2);
+            VelaConsoleRenderer.PrintProgramOutput(result);
+            renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2, includeStandardOutput: false, includeStandardError: false);
             return result.ExitCode;
         }
         finally
@@ -550,11 +551,19 @@ internal sealed class VelaConsoleRenderer
         _options = options;
         _console = AnsiConsole.Create(new AnsiConsoleSettings
         {
+            // Spectre otherwise performs a second capability probe and can suppress
+            // ANSI even when the user explicitly chose --color always.
+            Ansi = options.ColorMode switch
+            {
+                ColorMode.Always => AnsiSupport.Yes,
+                ColorMode.Never => AnsiSupport.No,
+                _ => ShouldUseColor() ? AnsiSupport.Yes : AnsiSupport.No
+            },
             ColorSystem = options.ColorMode switch
             {
                 ColorMode.Always => ColorSystemSupport.TrueColor,
                 ColorMode.Never => ColorSystemSupport.NoColors,
-                _ => ColorSystemSupport.Detect
+                _ => ShouldUseColor() ? ColorSystemSupport.TrueColor : ColorSystemSupport.NoColors
             }
         });
     }
@@ -565,7 +574,7 @@ internal sealed class VelaConsoleRenderer
     {
         if (!_options.Quiet)
         {
-            _console.MarkupLine($"[bold green]{Markup.Escape(verb),12}[/] {Markup.Escape(message)}");
+            _console.MarkupLine($"[bold {StatusColor(verb)}]{Markup.Escape(verb),12}[/] {Markup.Escape(message)}");
         }
     }
 
@@ -581,7 +590,7 @@ internal sealed class VelaConsoleRenderer
     {
         if (!_options.Quiet)
         {
-            _console.MarkupLine($"[dim]{Markup.Escape(label),12}[/] {Markup.Escape(message)}");
+            _console.MarkupLine($"[dim {DetailColor(label)}]{Markup.Escape(label),12}[/] {Markup.Escape(message)}");
         }
     }
 
@@ -609,16 +618,41 @@ internal sealed class VelaConsoleRenderer
         }
     }
 
-    public void PrintProcessOutput(ProcessResult result, bool raw)
+    public static void PrintProgramOutput(ProcessResult result)
+    {
+        if (!string.IsNullOrEmpty(result.StandardOutput))
+        {
+            Console.Out.Write(result.StandardOutput);
+        }
+
+        if (!string.IsNullOrEmpty(result.StandardError))
+        {
+            Console.Error.Write(result.StandardError);
+        }
+    }
+
+    public void PrintProcessOutput(
+        ProcessResult result,
+        bool raw,
+        bool includeStandardOutput = true,
+        bool includeStandardError = true)
     {
         if (!raw)
         {
             return;
         }
 
-        foreach (var line in SplitLines(result.StandardOutput))
+        if (includeStandardOutput)
         {
-            _console.MarkupLine($"[dim]dotnet:[/] {Markup.Escape(line)}");
+            foreach (var line in SplitLines(result.StandardOutput))
+            {
+                _console.MarkupLine($"[dim]dotnet:[/] {Markup.Escape(line)}");
+            }
+        }
+
+        if (!includeStandardError)
+        {
+            return;
         }
 
         foreach (var line in SplitLines(result.StandardError))
@@ -628,6 +662,32 @@ internal sealed class VelaConsoleRenderer
     }
 
     private static string[] SplitLines(string value) => value.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static bool ShouldUseColor()
+    {
+        var noColor = Environment.GetEnvironmentVariable("NO_COLOR");
+        var terminal = Environment.GetEnvironmentVariable("TERM");
+        return !Console.IsOutputRedirected
+            && string.IsNullOrEmpty(noColor)
+            && !string.Equals(terminal, "dumb", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string StatusColor(string verb) => verb switch
+    {
+        "Resolving" or "Checking" => "deepskyblue1",
+        "Compiling" or "Lowering" => "cornflowerblue",
+        "Publishing" => "gold1",
+        "Running" => "orchid",
+        _ => "green"
+    };
+
+    private static string DetailColor(string label) => label switch
+    {
+        "Target" or "Size" or "Bundle" => "mediumorchid1",
+        "Manifest" => "turquoise2",
+        "Including" or "Resolving" => "deepskyblue1",
+        _ => "grey70"
+    };
 
     private static string Highlight(string source)
     {
@@ -663,7 +723,7 @@ internal sealed class VelaConsoleRenderer
                 }
 
                 var token = source[index..end];
-                var style = token is "fn" or "let" or "var" or "return" or "if" or "else" or "for" or "in" or "record" or "class" or "struct" or "interface" or "public" or "ffi" or "include" or "implements"
+                var style = token is "fn" or "let" or "var" or "return" or "if" or "else" or "for" or "in" or "while" or "break" or "continue" or "switch" or "case" or "default" or "record" or "class" or "struct" or "interface" or "public" or "ffi" or "include" or "implements"
                     ? "blue"
                     : "white";
                 builder.Append('[').Append(style).Append(']').Append(Markup.Escape(token)).Append("[/]");

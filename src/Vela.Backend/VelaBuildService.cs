@@ -250,6 +250,7 @@ public sealed class VelaBuildService
         var normalizedPublishDirectory = Path.GetFullPath(publishDirectory);
         var normalizedOutputDirectory = Path.GetFullPath(outputDirectory);
         Directory.CreateDirectory(normalizedOutputDirectory);
+        RemoveObsoleteDebugArtifacts(normalizedOutputDirectory);
 
         var primaryRelativePath = GetSafeRelativePath(normalizedPublishDirectory, executablePath);
         var stagedFiles = Directory.EnumerateFiles(normalizedPublishDirectory, "*", SearchOption.AllDirectories)
@@ -307,6 +308,17 @@ public sealed class VelaBuildService
         var extension = Path.GetExtension(path);
         return !string.Equals(extension, ".pdb", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void RemoveObsoleteDebugArtifacts(string outputDirectory)
+    {
+        foreach (var extension in new[] { "*.pdb", "*.xml", "*.dbg" })
+        {
+            foreach (var path in Directory.EnumerateFiles(outputDirectory, extension, SearchOption.TopDirectoryOnly))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     private static string AppendError(string standardError, string message) => string.IsNullOrWhiteSpace(standardError)

@@ -1,0 +1,43 @@
+// Run with: vela run examples/secure-message.vela
+
+include vela.core;
+include vela.core.json;
+include vela.core.crypto;
+include vela.core.encoding;
+include vela.core.text;
+
+interface Renderable {
+    fn render() -> Text;
+}
+
+class SignedMessage implements Renderable {
+    id: Int;
+    payload: Text;
+
+    fn render() -> Text {
+        return "message:" + self.payload;
+    }
+
+    fn signature(secret: Text) -> Text {
+        let canonical = json.compact(self.payload);
+        return crypto.hmac_sha256(secret, canonical);
+    }
+}
+
+fn main() -> Int {
+    let payload: Text = "{ \"id\": 42, \"active\": true }";
+    assert json.is_valid(payload), "payload must be JSON";
+
+    let message = SignedMessage(42, payload);
+    let signature = message.signature("vela-secret");
+    let repeated = message.signature("vela-secret");
+    let identifier = json.try_get_int(payload, "id");
+    let digestBytes = encoding.utf8_byte_count(signature);
+
+    assert crypto.constant_time_equals(signature, repeated), "signature mismatch";
+    print(message.render());
+    print(identifier.value);
+    print(text.slice(signature, 0, 12));
+    print(digestBytes);
+    return 0;
+}

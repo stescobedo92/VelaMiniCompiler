@@ -1,0 +1,31 @@
+// Run with: vela run examples/core-text-math.vela
+
+include vela.core;
+include vela.core.text;
+include vela.core.math;
+include vela.core.time;
+include vela.core.random;
+include vela.core.encoding;
+include vela.core.env;
+
+fn main() -> Int {
+    let label = text.to_upper_invariant(text.trim("  vela runtime  "));
+    let prefix = text.slice(label, 0, 4);
+    let magnitude = math.abs(-42);
+    let root = math.sqrt(81);
+    let encoded = encoding.base64_encode(prefix);
+    let decoded = encoding.base64_decode(encoded);
+    let sample = random.next_int(10, 20);
+    let environment = env.get_or("VELA_SAMPLE", "local");
+    let started = time.monotonic_ticks();
+    let elapsed = time.elapsed_milliseconds(started, time.monotonic_ticks());
+
+    print(decoded);
+    print(magnitude);
+    print(root);
+    print(sample);
+    print(environment);
+    print(elapsed);
+    print(text.length(label));
+    return 0;
+}

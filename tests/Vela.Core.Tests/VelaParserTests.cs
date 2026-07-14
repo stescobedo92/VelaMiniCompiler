@@ -165,4 +165,53 @@ public sealed class VelaParserTests
         Assert.Equal("value", loop.Identifier.Text);
         Assert.IsType<NameExpressionSyntax>(loop.Collection);
     }
+
+    [Fact]
+    public void ParseWhileLoopControlAndSwitchCapturesBraceBasedControlFlow()
+    {
+        const string code = """
+            fn main() -> Int {
+                var value: Int = 0;
+                while value < 10 {
+                    value = value + 1;
+                    if value == 3 {
+                        continue;
+                    }
+                    if value == 8 {
+                        break;
+                    }
+                }
+                switch value {
+                    case 8 {
+                        print("stopped");
+                    }
+                    default {
+                        print("other");
+                    }
+                }
+                return value;
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "control-flow.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var function = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        var loop = Assert.IsType<WhileStatementSyntax>(function.Body.Statements[1]);
+        Assert.IsType<ContinueStatementSyntax>(Assert.IsType<IfStatementSyntax>(loop.Body.Statements[1]).ThenBlock.Statements[0]);
+        Assert.IsType<BreakStatementSyntax>(Assert.IsType<IfStatementSyntax>(loop.Body.Statements[2]).ThenBlock.Statements[0]);
+        var selection = Assert.IsType<SwitchStatementSyntax>(function.Body.Statements[2]);
+        Assert.Single(selection.Cases);
+        Assert.NotNull(selection.DefaultClause);
+    }
+
+    [Fact]
+    public void ParseDuplicateSwitchDefaultReportsDiagnostic()
+    {
+        const string code = "switch 1 { default { print(\"first\"); } default { print(\"second\"); } }";
+
+        var result = VelaParser.Parse(new SourceText(code, "duplicate-default.vela"));
+
+        Assert.Contains(result.Diagnostics, static diagnostic => diagnostic.Code == "P008");
+    }
 }

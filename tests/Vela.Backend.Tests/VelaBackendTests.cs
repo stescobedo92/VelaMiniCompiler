@@ -322,6 +322,88 @@ public sealed class VelaBackendTests
         }
     }
 
+    [Fact]
+    public async Task CompileCoreModulesAndControlFlowGeneratesAndRuns()
+    {
+        var compilation = Compile("""
+            include vela.core;
+            include vela.core.json;
+            include vela.core.crypto;
+            include vela.core.text;
+            include vela.core.math;
+
+            fn main() -> Int {
+                let payload: Text = "{ \"id\": 42 }";
+                var value: Int = 0;
+                while value < 5 {
+                    value = value + 1;
+                    if value == 2 {
+                        continue;
+                    }
+                    if value == 4 {
+                        break;
+                    }
+                }
+                switch value {
+                    case 4 {
+                        print(json.try_get_int(payload, "id").value);
+                    }
+                    default {
+                        print("unexpected");
+                    }
+                }
+                print(text.slice(crypto.sha256("vela"), 0, 8));
+                print(math.sqrt(81));
+                print(math.min(5, 2));
+                print(math.clamp(15, 0, 10));
+                return 0;
+            }
+            """, "core-control.vela");
+
+        Assert.False(compilation.HasErrors);
+        Assert.Contains("while (", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaJson.TryGetInt", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaCrypto.Sha256", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("CoreControl", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("42", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("9", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("2", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("10", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public void CompileInvalidLoopControlAndSwitchCasesReportsDiagnostics()
+    {
+        var compilation = Compile("""
+            fn main() -> Int {
+                break;
+                switch 1 {
+                    case 1 { print("one"); }
+                    case 1 { print("duplicate"); }
+                }
+                return 0;
+            }
+            """, "invalid-control.vela");
+
+        Assert.True(compilation.HasErrors);
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VEL3015");
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Message.Contains("Duplicate switch case", StringComparison.Ordinal));
+    }
+
     private static VelaCompilation Compile(string code, string filePath) =>
         VelaCompiler.Compile(new SourceText(code, filePath));
 

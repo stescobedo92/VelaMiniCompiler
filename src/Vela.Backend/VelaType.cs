@@ -14,6 +14,7 @@ public sealed class VelaType
     public static readonly VelaType Bool = new("Bool");
     public static readonly VelaType Text = new("Text");
     public static readonly VelaType Any = new("Any");
+    public static readonly VelaType TcpConnection = new("TcpConnection");
     public static readonly VelaType Unit = new("Unit");
     public static readonly VelaType Nil = new("Nil");
 #pragma warning restore CA1720

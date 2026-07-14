@@ -85,6 +85,57 @@ public sealed record ForStatementSyntax(
     public override TextSpan Span => TextSpan.FromBounds(ForKeyword.Span.Start, Body.Span.End);
 }
 
+/// <summary>Repeats a block while a Boolean condition is true.</summary>
+public sealed record WhileStatementSyntax(
+    SyntaxToken WhileKeyword,
+    ExpressionSyntax Condition,
+    SyntaxToken LeftBrace,
+    BlockSyntax Body) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(WhileKeyword.Span.Start, Body.Span.End);
+}
+
+/// <summary>Exits the nearest enclosing loop.</summary>
+public sealed record BreakStatementSyntax(SyntaxToken BreakKeyword) : StatementSyntax
+{
+    public override TextSpan Span => BreakKeyword.Span;
+}
+
+/// <summary>Advances the nearest enclosing loop.</summary>
+public sealed record ContinueStatementSyntax(SyntaxToken ContinueKeyword) : StatementSyntax
+{
+    public override TextSpan Span => ContinueKeyword.Span;
+}
+
+/// <summary>Selects one isolated case block from a scalar expression.</summary>
+public sealed record SwitchStatementSyntax(
+    SyntaxToken SwitchKeyword,
+    ExpressionSyntax Expression,
+    SyntaxToken LeftBrace,
+    IReadOnlyList<SwitchCaseSyntax> Cases,
+    SwitchDefaultClauseSyntax? DefaultClause,
+    SyntaxToken RightBrace) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(SwitchKeyword.Span.Start, RightBrace.Span.End);
+}
+
+/// <summary>Represents one literal case and its isolated block.</summary>
+public sealed record SwitchCaseSyntax(
+    SyntaxToken CaseKeyword,
+    ExpressionSyntax Value,
+    BlockSyntax Body) : SyntaxNode
+{
+    public override TextSpan Span => TextSpan.FromBounds(CaseKeyword.Span.Start, Body.Span.End);
+}
+
+/// <summary>Represents the optional fallback block of a switch statement.</summary>
+public sealed record SwitchDefaultClauseSyntax(
+    SyntaxToken DefaultKeyword,
+    BlockSyntax Body) : SyntaxNode
+{
+    public override TextSpan Span => TextSpan.FromBounds(DefaultKeyword.Span.Start, Body.Span.End);
+}
+
 public sealed record ElseClauseSyntax(
     SyntaxToken ElseKeyword,
     SyntaxToken LeftBrace,

@@ -1,0 +1,16 @@
+// Compile with: vela check examples/tcp-echo-client.vela
+// Run only against a trusted local echo server.
+
+include vela.core;
+include vela.core.tcp;
+include vela.core.crypto;
+
+fn main() -> Int {
+    let connection = tcp.connect("127.0.0.1", 7007, 1000);
+    let payload = crypto.random_hex(8);
+    tcp.send_text(connection, payload);
+    let echoed = tcp.receive_text(connection, 1024);
+    tcp.close(connection);
+    print(echoed);
+    return 0;
+}

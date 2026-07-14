@@ -38,8 +38,12 @@ statements.
   collection types. There is intentionally no `UFloat` type.
 - Checked conversions such as `Int(value)`, `UInt(value)`, `Long(value)`,
   `Float(value)`, `Double(value)`, and `Decimal(value)`.
+- Brace-based `if`/`else`, `for`, `while`, `break`, `continue`, and literal
+  `switch` cases with no fall-through.
 - `include vela.core;` for the core surface and `include package.name as alias;`
   for manifest-declared native package dependencies.
+- Explicit, Native-AOT-trimmed core modules: `json`, `crypto`, `tcp`, `text`,
+  `math`, `time`, `random`, `io`, `encoding`, and `env`.
 - `public ffi fn` exports scalar native ABI functions. Cross-package calls
   currently support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Unit`;
   `Text` and `Decimal` are emitted as library ABI values but are not yet accepted
@@ -101,6 +105,8 @@ On Windows the artifact is `artifacts\factorial\factorial.exe`; on Linux and
 macOS it is an executable without an extension. Use `vela targets` to display
 the selected target, `--color never` for plain logs, `--quiet` to suppress normal
 build progress, or `-vv` to show the raw .NET publishing command output.
+In an interactive terminal, Vela uses TrueColor by default; use `NO_COLOR=1`
+or `--color never` to disable it.
 
 Build a native library and an application that imports it:
 
@@ -116,6 +122,19 @@ dotnet run --project .\src\Vela.Cli -- build .\examples\packages\vela-app `
 
 The final command prints `42` on Windows. The equivalent executable name is
 selected automatically on Linux and macOS.
+
+Try the progressive examples:
+
+```powershell
+dotnet run --project .\src\Vela.Cli -- run .\examples\control-flow.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\core-text-math.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\secure-message.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\file-json-report.vela
+dotnet run --project .\src\Vela.Cli -- check .\examples\tcp-echo-client.vela
+```
+
+`tcp-echo-client.vela` is intentionally only checked by default; execute it
+only against a trusted local echo server.
 
 ## Vela at a glance
 

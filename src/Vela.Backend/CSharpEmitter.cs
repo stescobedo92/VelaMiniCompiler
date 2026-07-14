@@ -20,6 +20,11 @@ internal sealed class CSharpEmitter
         "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true", "try",
         "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using", "virtual", "void", "volatile", "while"
     };
+    private static readonly HashSet<string> CoreModules = new(StringComparer.Ordinal)
+    {
+        "vela.core.json", "vela.core.crypto", "vela.core.tcp", "vela.core.text", "vela.core.math",
+        "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env"
+    };
 
     private readonly SourceText _source;
     private readonly DiagnosticBag _diagnostics;
@@ -29,10 +34,13 @@ internal sealed class CSharpEmitter
     private readonly Dictionary<string, ObjectSymbol> _objects = new(StringComparer.Ordinal);
     private readonly Dictionary<string, VelaLibraryImport> _imports;
     private readonly Dictionary<string, VelaLibraryImport> _importsByAlias = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _coreModuleAliases = new(StringComparer.Ordinal);
     private ObjectSymbol? _currentObject;
     private bool _libraryMode;
     private string _libraryPackageName = string.Empty;
     private readonly List<VelaFfiExport> _ffiExports = [];
+    private int _loopDepth;
+    private int _switchIdentifier;
 
     public CSharpEmitter(SourceText source, DiagnosticBag diagnostics, IReadOnlyList<VelaLibraryImport>? imports = null)
     {
@@ -216,6 +224,23 @@ internal sealed class CSharpEmitter
                 continue;
             }
 
+            if (include.PackageName.StartsWith("vela.core.", StringComparison.Ordinal))
+            {
+                if (!CoreModules.Contains(include.PackageName))
+                {
+                    Report("VEL3014", include.Span, $"Unknown Vela core module '{include.PackageName}'.", "Import one of the documented vela.core modules.");
+                    continue;
+                }
+
+                var coreAlias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
+                if (!_coreModuleAliases.TryAdd(coreAlias, include.PackageName) || _importsByAlias.ContainsKey(coreAlias))
+                {
+                    Report("VEL3000", include.Span, $"Duplicate package alias '{coreAlias}'.", "Use a unique alias after 'as'.");
+                }
+
+                continue;
+            }
+
             if (!_imports.TryGetValue(include.PackageName, out var importItem))
             {
                 Report("VEL3014", include.Span, $"Package '{include.PackageName}' is not declared by the current build.", "Declare it in vela.toml and build the locked dependency graph.");
@@ -223,7 +248,7 @@ internal sealed class CSharpEmitter
             }
 
             var alias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
-            if (!_importsByAlias.TryAdd(alias, importItem))
+            if (!_importsByAlias.TryAdd(alias, importItem) || _coreModuleAliases.ContainsKey(alias))
             {
                 Report("VEL3000", include.Span, $"Duplicate package alias '{alias}'.", "Use a unique alias after 'as'.");
             }
@@ -272,6 +297,7 @@ internal sealed class CSharpEmitter
         _writer.WriteLine("public static int Main(string[] args)");
         _writer.WriteLine("{");
         _writer.Indent();
+        _writer.WriteLine("VelaEnvironment.Initialize(args);");
 
         if (_functions.TryGetValue("main", out var main))
         {
@@ -565,6 +591,16 @@ internal sealed class CSharpEmitter
             case ForStatementSyntax loop:
                 EmitFor(loop, scope, returnType);
                 return false;
+            case WhileStatementSyntax loop:
+                EmitWhile(loop, scope, returnType);
+                return false;
+            case BreakStatementSyntax breakStatement:
+                return EmitLoopControl(breakStatement.BreakKeyword, "break");
+            case ContinueStatementSyntax continueStatement:
+                return EmitLoopControl(continueStatement.ContinueKeyword, "continue");
+            case SwitchStatementSyntax selection:
+                EmitSwitch(selection, scope, returnType);
+                return false;
             case FunctionDeclarationSyntax:
             case RecordDeclarationSyntax:
                 Report("VEL3012", statement.Span, "Declarations are only allowed at the top level.", "Move this declaration outside the current function or block.");
@@ -668,9 +704,107 @@ internal sealed class CSharpEmitter
         _writer.WriteLine($"foreach (var {EscapeIdentifier(loop.Identifier.Text)} in {collection.Code})");
         _writer.WriteLine("{");
         _writer.Indent();
-        _ = EmitBlock(loop.Body, loopScope, returnType, isTailBlock: false);
+        _loopDepth++;
+        try
+        {
+            _ = EmitBlock(loop.Body, loopScope, returnType, isTailBlock: false);
+        }
+        finally
+        {
+            _loopDepth--;
+        }
         _writer.Unindent();
         _writer.WriteLine("}");
+    }
+
+    private void EmitWhile(WhileStatementSyntax loop, Scope scope, VelaType returnType)
+    {
+        var condition = EmitExpression(loop.Condition, scope);
+        EnsureAssignable(VelaType.Bool, condition.Type, loop.Condition.Span);
+        _writer.WriteLine($"while ({condition.Code})");
+        _writer.WriteLine("{");
+        _writer.Indent();
+        _loopDepth++;
+        try
+        {
+            _ = EmitBlock(loop.Body, scope, returnType, isTailBlock: false);
+        }
+        finally
+        {
+            _loopDepth--;
+        }
+
+        _writer.Unindent();
+        _writer.WriteLine("}");
+    }
+
+    private bool EmitLoopControl(SyntaxToken keyword, string emittedKeyword)
+    {
+        if (_loopDepth == 0)
+        {
+            Report("VEL3015", keyword.Span, $"'{emittedKeyword}' is only valid inside a loop.", "Place it inside a while or for block.");
+        }
+
+        _writer.WriteLine(emittedKeyword + ";");
+        return true;
+    }
+
+    private void EmitSwitch(SwitchStatementSyntax selection, Scope scope, VelaType returnType)
+    {
+        var subject = EmitExpression(selection.Expression, scope);
+        if (subject.Type.Name is not "Int" and not "UInt" and not "Long" and not "Bool" and not "Text")
+        {
+            Report("VEL3006", selection.Expression.Span, $"Switch does not support values of type '{subject.Type}'.", "Use Int, UInt, Long, Bool, or Text.");
+        }
+
+        var subjectName = "__velaSwitch" + _switchIdentifier++.ToString(CultureInfo.InvariantCulture);
+        _writer.WriteLine($"var {subjectName} = {subject.Code};");
+        var seenCases = new HashSet<string>(StringComparer.Ordinal);
+        var hasCase = false;
+        foreach (var switchCase in selection.Cases)
+        {
+            var value = EmitExpression(switchCase.Value, scope);
+            if (switchCase.Value is not LiteralExpressionSyntax)
+            {
+                Report("VEL3006", switchCase.Value.Span, "Switch case values must be literals.", "Use an Int, UInt, Long, Bool, or Text literal.");
+            }
+
+            if (!subject.Type.IsSameAs(value.Type))
+            {
+                if (subject.Type.IsNumeric && value.Type.IsNumeric)
+                {
+                    value = new ExpressionResult(subject.Type, CoerceNumeric(subject.Type, value, switchCase.Value));
+                }
+                else
+                {
+                    Report("VEL3002", switchCase.Value.Span, $"Switch case type '{value.Type}' does not match subject type '{subject.Type}'.");
+                }
+            }
+
+            var key = subject.Type + "|" + value.Code;
+            if (!seenCases.Add(key))
+            {
+                Report("VEL3000", switchCase.Value.Span, "Duplicate switch case value.", "Keep each case value unique.");
+            }
+
+            _writer.WriteLine(hasCase ? $"else if ({subjectName} == {value.Code})" : $"if ({subjectName} == {value.Code})");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            _ = EmitBlock(switchCase.Body, scope, returnType, isTailBlock: false);
+            _writer.Unindent();
+            _writer.WriteLine("}");
+            hasCase = true;
+        }
+
+        if (selection.DefaultClause is not null)
+        {
+            _writer.WriteLine(hasCase ? "else" : "if (true)");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            _ = EmitBlock(selection.DefaultClause.Body, scope, returnType, isTailBlock: false);
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
     }
 
     private ExpressionResult EmitExpression(ExpressionSyntax expression, Scope scope)
@@ -1126,6 +1260,11 @@ internal sealed class CSharpEmitter
 
     private ExpressionResult EmitMemberMethodCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, Scope scope)
     {
+        if (member.Receiver is NameExpressionSyntax { Identifier.Text: var coreAlias } && _coreModuleAliases.TryGetValue(coreAlias, out var coreModule))
+        {
+            return EmitCoreModuleCall(call, member, coreModule, scope);
+        }
+
         if (member.Receiver is NameExpressionSyntax { Identifier.Text: var alias } && _importsByAlias.TryGetValue(alias, out var importItem))
         {
             return EmitImportedFunctionCall(call, member, importItem, scope);
@@ -1138,6 +1277,208 @@ internal sealed class CSharpEmitter
         }
 
         return EmitCollectionMethodCall(call, member, scope, receiver);
+    }
+
+    private ExpressionResult EmitCoreModuleCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, string module, Scope scope)
+    {
+        if (call.TypeArguments.Count != 0)
+        {
+            Report("VEL3006", call.Span, $"Core module function '{member.Member.Text}' does not accept type arguments.");
+        }
+
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        return module switch
+        {
+            "vela.core.json" => EmitJsonCall(call, member.Member, arguments),
+            "vela.core.crypto" => EmitCryptoCall(call, member.Member, arguments),
+            "vela.core.tcp" => EmitTcpCall(call, member.Member, arguments),
+            "vela.core.text" => EmitTextCall(call, member.Member, arguments),
+            "vela.core.math" => EmitMathCall(call, member.Member, arguments),
+            "vela.core.time" => EmitTimeCall(call, member.Member, arguments),
+            "vela.core.random" => EmitRandomCall(call, member.Member, arguments),
+            "vela.core.io" => EmitIoCall(call, member.Member, arguments),
+            "vela.core.encoding" => EmitEncodingCall(call, member.Member, arguments),
+            "vela.core.env" => EmitEnvironmentCall(call, member.Member, arguments),
+            _ => ReportUnknownCoreOperation(member.Member, module)
+        };
+    }
+
+    private ExpressionResult EmitJsonCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "is_valid" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text], values => $"VelaJson.IsValid({values[0]})"),
+        "compact" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaJson.Compact({values[0]}, {SourceLocationCode(call)})"),
+        "pretty" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaJson.Pretty({values[0]}, {SourceLocationCode(call)})"),
+        "try_get_text" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Text, VelaType.Text], values => $"VelaJson.TryGetText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "try_get_int" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Int]), [VelaType.Text, VelaType.Text], values => $"VelaJson.TryGetInt({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "try_get_bool" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Bool]), [VelaType.Text, VelaType.Text], values => $"VelaJson.TryGetBool({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.json")
+    };
+
+    private ExpressionResult EmitCryptoCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "sha256" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaCrypto.Sha256({values[0]})"),
+        "hmac_sha256" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Text], values => $"VelaCrypto.HmacSha256({values[0]}, {values[1]})"),
+        "constant_time_equals" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text, VelaType.Text], values => $"VelaCrypto.ConstantTimeEquals({values[0]}, {values[1]})"),
+        "random_hex" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Int], values => $"VelaCrypto.RandomHex({values[0]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.crypto")
+    };
+
+    private ExpressionResult EmitTcpCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "connect" => EmitCoreFunction(call, operation, arguments, VelaType.TcpConnection, [VelaType.Text, VelaType.Int, VelaType.Int], values => $"TcpConnection.Connect({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
+        "send_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.TcpConnection, VelaType.Text], values => $"{values[0]}.SendText({values[1]}, {SourceLocationCode(call)})"),
+        "receive_text" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.TcpConnection, VelaType.Int], values => $"{values[0]}.ReceiveText({values[1]}, {SourceLocationCode(call)})"),
+        "close" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.TcpConnection], values => $"{values[0]}.Dispose()"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.tcp")
+    };
+
+    private ExpressionResult EmitTextCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "length" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.Text], values => $"VelaTextOperations.Length({values[0]})"),
+        "contains" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text, VelaType.Text], values => $"VelaTextOperations.Contains({values[0]}, {values[1]})"),
+        "starts_with" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text, VelaType.Text], values => $"VelaTextOperations.StartsWith({values[0]}, {values[1]})"),
+        "ends_with" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text, VelaType.Text], values => $"VelaTextOperations.EndsWith({values[0]}, {values[1]})"),
+        "trim" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.Trim({values[0]})"),
+        "to_upper_invariant" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.ToUpperInvariant({values[0]})"),
+        "to_lower_invariant" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.ToLowerInvariant({values[0]})"),
+        "slice" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaTextOperations.Slice({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.text")
+    };
+
+    private ExpressionResult EmitMathCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments)
+    {
+        if (operation.Text is "sqrt" or "pow")
+        {
+            var count = operation.Text == "sqrt" ? 1 : 2;
+            if (arguments.Length != count)
+            {
+                Report("VEL3006", call.Span, $"Core function 'math.{operation.Text}' expects {count} argument(s), but received {arguments.Length}.");
+            }
+
+            var values = Enumerable.Range(0, count).Select(index => index < arguments.Length ? arguments[index] : new ExpressionResult(VelaType.Double, "0d")).ToArray();
+            foreach (var value in values)
+            {
+                if (!value.Type.IsNumeric)
+                {
+                    Report("VEL3002", call.Span, $"Core function 'math.{operation.Text}' requires numeric arguments.");
+                }
+            }
+
+            var numbers = values.Select(value => CoerceNumeric(VelaType.Double, value, call)).ToArray();
+            return operation.Text == "sqrt"
+                ? new ExpressionResult(VelaType.Double, $"VelaMath.Sqrt({numbers[0]}, {SourceLocationCode(call)})")
+                : new ExpressionResult(VelaType.Double, $"VelaMath.Pow({numbers[0]}, {numbers[1]}, {SourceLocationCode(call)})");
+        }
+
+        var expectedCount = operation.Text == "abs" ? 1 : operation.Text is "min" or "max" ? 2 : operation.Text == "clamp" ? 3 : 0;
+        if (expectedCount == 0)
+        {
+            return ReportUnknownCoreOperation(operation, "vela.core.math");
+        }
+
+        if (arguments.Length != expectedCount)
+        {
+            Report("VEL3006", call.Span, $"Core function 'math.{operation.Text}' expects {expectedCount} argument(s), but received {arguments.Length}.");
+        }
+
+        var resultType = arguments.Length == 0 ? VelaType.Int : arguments[0].Type;
+        if (!resultType.IsNumeric)
+        {
+            Report("VEL3002", call.Span, $"Core function 'math.{operation.Text}' requires numeric arguments.");
+        }
+
+        var numericValues = Enumerable.Range(0, expectedCount).Select(index => index < arguments.Length ? arguments[index] : new ExpressionResult(resultType, DefaultValue(resultType))).ToArray();
+        foreach (var value in numericValues)
+        {
+            EnsureAssignable(resultType, value.Type, call.Span);
+        }
+
+        var codes = numericValues.Select(value => CoerceCode(resultType, value, call)).ToArray();
+        var method = operation.Text switch
+        {
+            "abs" => "Abs",
+            "min" => "Min",
+            "max" => "Max",
+            _ => "Clamp"
+        };
+        var location = method == "Abs" && resultType.Name is "Int" or "Long"
+            ? ", " + SourceLocationCode(call)
+            : string.Empty;
+        return new ExpressionResult(resultType, $"VelaMath.{method}({string.Join(", ", codes)}{location})");
+    }
+
+    private ExpressionResult EmitTimeCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "utc_unix_milliseconds" => EmitCoreFunction(call, operation, arguments, VelaType.Long, [], _ => "VelaTime.UtcUnixMilliseconds()"),
+        "monotonic_ticks" => EmitCoreFunction(call, operation, arguments, VelaType.Long, [], _ => "VelaTime.MonotonicTicks()"),
+        "elapsed_milliseconds" => EmitCoreFunction(call, operation, arguments, VelaType.Long, [VelaType.Long, VelaType.Long], values => $"VelaTime.ElapsedMilliseconds({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.time")
+    };
+
+    private ExpressionResult EmitRandomCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "next_int" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.Int, VelaType.Int], values => $"VelaRandom.NextInt({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "next_double" => EmitCoreFunction(call, operation, arguments, VelaType.Double, [], _ => "VelaRandom.NextDouble()"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.random")
+    };
+
+    private ExpressionResult EmitIoCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "exists" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text], values => $"VelaIo.Exists({values[0]})"),
+        "read_text" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaIo.ReadText({values[0]}, {SourceLocationCode(call)})"),
+        "write_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text], values => $"VelaIo.WriteText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "append_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text], values => $"VelaIo.AppendText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.io")
+    };
+
+    private ExpressionResult EmitEncodingCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "utf8_byte_count" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.Text], values => $"VelaEncoding.Utf8ByteCount({values[0]})"),
+        "hex_encode" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaEncoding.HexEncode({values[0]})"),
+        "base64_encode" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaEncoding.Base64Encode({values[0]})"),
+        "hex_decode" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaEncoding.HexDecode({values[0]}, {SourceLocationCode(call)})"),
+        "base64_decode" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaEncoding.Base64Decode({values[0]}, {SourceLocationCode(call)})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.encoding")
+    };
+
+    private ExpressionResult EmitEnvironmentCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "get" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Text], values => $"VelaEnvironment.Get({values[0]})"),
+        "get_or" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Text], values => $"VelaEnvironment.GetOr({values[0]}, {values[1]})"),
+        "argument_count" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [], _ => "VelaEnvironment.ArgumentCount()"),
+        "argument" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Int], values => $"VelaEnvironment.Argument({values[0]})"),
+        "current_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [], _ => "VelaEnvironment.CurrentDirectory()"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.env")
+    };
+
+    private ExpressionResult EmitCoreFunction(
+        CallExpressionSyntax call,
+        SyntaxToken operation,
+        ExpressionResult[] arguments,
+        VelaType returnType,
+        IReadOnlyList<VelaType> parameterTypes,
+        Func<string[], string> emit)
+    {
+        if (arguments.Length != parameterTypes.Count)
+        {
+            Report("VEL3006", call.Span, $"Core function '{operation.Text}' expects {parameterTypes.Count} argument(s), but received {arguments.Length}.");
+        }
+
+        var values = new string[parameterTypes.Count];
+        for (var index = 0; index < parameterTypes.Count; index++)
+        {
+            var argument = index < arguments.Length ? arguments[index] : new ExpressionResult(parameterTypes[index], DefaultValue(parameterTypes[index]));
+            EnsureAssignable(parameterTypes[index], argument.Type, index < call.Arguments.Count ? call.Arguments[index].Span : call.Span);
+            values[index] = CoerceCode(parameterTypes[index], argument, call);
+        }
+
+        return new ExpressionResult(returnType, emit(values));
+    }
+
+    private ExpressionResult ReportUnknownCoreOperation(SyntaxToken operation, string module)
+    {
+        Report("VEL3005", operation.Span, $"Core module '{module}' does not export '{operation.Text}'.", "Use a documented core module operation.");
+        return new ExpressionResult(VelaType.Unknown, "default");
     }
 
     private ExpressionResult EmitImportedFunctionCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, VelaLibraryImport importItem, Scope scope)
@@ -1690,6 +2031,7 @@ internal sealed class CSharpEmitter
             "Bool" => VelaType.Bool,
             "Text" or "String" => VelaType.Text,
             "Any" => VelaType.Any,
+            "TcpConnection" => VelaType.TcpConnection,
             "Unit" => VelaType.Unit,
             "List" or "Vector" => new VelaType("List", arguments),
             "Array" or "Result" or "Option" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" => new VelaType(named.Identifier.Text, arguments),
@@ -1954,6 +2296,12 @@ internal sealed class CSharpEmitter
 
     private void EnsureAssignable(VelaType expected, VelaType actual, TextSpan span)
     {
+        if (actual.IsSameAs(VelaType.TcpConnection) && expected.IsSameAs(VelaType.Any))
+        {
+            Report("VEL3010", span, "TcpConnection cannot be boxed as Any.", "Keep the connection in its explicit TcpConnection binding and close it with tcp.close.");
+            return;
+        }
+
         if (expected.IsUnknown || actual.IsUnknown || expected.IsSameAs(actual) || expected.IsSameAs(VelaType.Any) || (actual.IsSameAs(VelaType.Nil) && expected.IsOptional) || CanWidenNumeric(expected, actual))
         {
             return;
@@ -2025,6 +2373,7 @@ internal sealed class CSharpEmitter
         "Bool" => "bool",
         "Text" => "string",
         "Any" => "object",
+        "TcpConnection" => "TcpConnection",
         "Unit" => "void",
         "Option" when type.TypeArguments.Count == 1 => $"Option<{CSharpType(type.TypeArguments[0])}>",
         "Result" when type.TypeArguments.Count == 2 => $"Result<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",

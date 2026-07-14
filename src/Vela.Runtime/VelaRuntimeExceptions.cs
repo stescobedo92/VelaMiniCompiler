@@ -44,3 +44,15 @@ public sealed class VelaIndexOutOfRangeException(int index, int length, string? 
 /// <summary>Thrown when a boxed Vela value cannot be converted to the requested type.</summary>
 public sealed class VelaInvalidCastException(string expectedType, string actualType, string? sourceLocation = null)
     : VelaRuntimeException($"Cannot unbox value of type '{actualType}' as '{expectedType}'.", sourceLocation);
+
+/// <summary>Thrown when text or structured input is malformed.</summary>
+public sealed class VelaFormatException(string message, string? sourceLocation = null, Exception? innerException = null)
+    : VelaRuntimeException(message, sourceLocation, innerException);
+
+/// <summary>Thrown when an explicit Vela file operation fails.</summary>
+public sealed class VelaIoException(string message, string? sourceLocation = null, Exception? innerException = null)
+    : VelaRuntimeException(message, sourceLocation, innerException);
+
+/// <summary>Thrown when an explicit Vela network operation fails.</summary>
+public sealed class VelaNetworkException(string message, string? sourceLocation = null, Exception? innerException = null)
+    : VelaRuntimeException(message, sourceLocation, innerException);

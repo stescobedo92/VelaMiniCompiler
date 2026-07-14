@@ -1,0 +1,29 @@
+// Run with: vela run examples/file-json-report.vela
+
+include vela.core;
+include vela.core.io;
+include vela.core.json;
+include vela.core.text;
+
+class Report {
+    title: Text;
+    valid: Bool;
+
+    fn summary() -> Text {
+        if self.valid {
+            return self.title + ": valid";
+        }
+        return self.title + ": invalid";
+    }
+}
+
+fn main() -> Int {
+    let path: Text = "vela-report.json";
+    let payload: Text = "{ \"title\": \"Vela\" }";
+    io.write_text(path, payload);
+    let stored = io.read_text(path);
+    let title = json.try_get_text(stored, "title");
+    let report = Report(title.value, json.is_valid(stored));
+    print(report.summary());
+    return 0;
+}

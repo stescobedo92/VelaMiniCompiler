@@ -54,6 +54,10 @@ public sealed class VelaParser
         TokenKind.AssertKeyword => ParseAssertStatement(),
         TokenKind.IfKeyword => ParseIfStatement(),
         TokenKind.ForKeyword => ParseForStatement(),
+        TokenKind.WhileKeyword => ParseWhileStatement(),
+        TokenKind.BreakKeyword => ParseBreakStatement(),
+        TokenKind.ContinueKeyword => ParseContinueStatement(),
+        TokenKind.SwitchKeyword => ParseSwitchStatement(),
         _ => ParseExpressionStatement()
     };
 
@@ -355,6 +359,74 @@ public sealed class VelaParser
         var collection = ParseExpression();
         var body = ParseBlock();
         return new ForStatementSyntax(keyword, identifier, inKeyword, collection, body.LeftBrace, body);
+    }
+
+    private WhileStatementSyntax ParseWhileStatement()
+    {
+        var keyword = Match(TokenKind.WhileKeyword);
+        var condition = ParseExpression();
+        var body = ParseBlock();
+        return new WhileStatementSyntax(keyword, condition, body.LeftBrace, body);
+    }
+
+    private BreakStatementSyntax ParseBreakStatement()
+    {
+        var keyword = Match(TokenKind.BreakKeyword);
+        ConsumeStatementTerminator();
+        return new BreakStatementSyntax(keyword);
+    }
+
+    private ContinueStatementSyntax ParseContinueStatement()
+    {
+        var keyword = Match(TokenKind.ContinueKeyword);
+        ConsumeStatementTerminator();
+        return new ContinueStatementSyntax(keyword);
+    }
+
+    private SwitchStatementSyntax ParseSwitchStatement()
+    {
+        var keyword = Match(TokenKind.SwitchKeyword);
+        var expression = ParseExpression();
+        var leftBrace = Match(TokenKind.LeftBrace);
+        SkipNewLines();
+        var cases = new List<SwitchCaseSyntax>();
+        SwitchDefaultClauseSyntax? defaultClause = null;
+        while (Current.Kind is not TokenKind.RightBrace and not TokenKind.EndOfFile)
+        {
+            SkipNewLines();
+            if (Current.Kind is TokenKind.RightBrace or TokenKind.EndOfFile)
+            {
+                break;
+            }
+
+            if (Current.Kind == TokenKind.CaseKeyword)
+            {
+                var caseKeyword = NextToken();
+                var value = ParseExpression();
+                var body = ParseBlock();
+                cases.Add(new SwitchCaseSyntax(caseKeyword, value, body));
+                continue;
+            }
+
+            if (Current.Kind == TokenKind.DefaultKeyword)
+            {
+                var defaultKeyword = NextToken();
+                if (defaultClause is not null)
+                {
+                    _diagnostics.ReportError("P008", defaultKeyword.Span, "A switch statement can contain only one 'default' clause.", "Remove the duplicate default block.");
+                }
+
+                var body = ParseBlock();
+                defaultClause ??= new SwitchDefaultClauseSyntax(defaultKeyword, body);
+                continue;
+            }
+
+            _diagnostics.ReportError("P008", Current.Span, "Expected 'case', 'default', or '}' in switch statement.", "Add a case block or close the switch statement.");
+            SynchronizeToStatementBoundary();
+        }
+
+        var rightBrace = Match(TokenKind.RightBrace);
+        return new SwitchStatementSyntax(keyword, expression, leftBrace, cases, defaultClause, rightBrace);
     }
 
     private ExpressionStatementSyntax ParseExpressionStatement()
