@@ -29,7 +29,7 @@ $wixSource = Join-Path $scriptDirectory 'vela-bundle.wxs'
 $wixObject = Join-Path $outputPath 'vela-bundle.wixobj'
 $bundlePath = Join-Path $outputPath "vela-$Version-win-x64-setup.exe"
 
-& $candle '-nologo' "-dVersion=$Version" "-dMsiPath=$resolvedMsiPath" '-out' $wixObject $wixSource
+& $candle '-nologo' '-ext' 'WixBalExtension' "-dVersion=$Version" "-dMsiPath=$resolvedMsiPath" '-out' $wixObject $wixSource
 if ($LASTEXITCODE -ne 0) { throw "candle.exe failed with exit code $LASTEXITCODE." }
 
 & $light '-nologo' '-ext' 'WixBalExtension' '-out' $bundlePath $wixObject
