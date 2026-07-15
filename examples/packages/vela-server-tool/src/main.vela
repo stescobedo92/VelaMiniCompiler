@@ -1,0 +1,39 @@
+// Combines CLI parsing, structured logs, bounded process execution, and safe files.
+include vela.core.io as io;
+include vela.core.system as system;
+include vela.std.cli as cli;
+include vela.std.log as log;
+
+fn main() -> Int {
+    let command = cli.command("server-tool", "Captures local runtime information.", "0.2.0");
+    command.flag("--json", "Emit JSON logs.");
+    let parsed = command.parse();
+    if parsed.show_help { print(command.render_help()); return 0; }
+    if parsed.show_version { print(command.version()); return 0; }
+    if parsed.is_error { cli.print_error_and_help(command, parsed.error); return 2; }
+
+    let logger = log.logger("server-tool", json: parsed.require_bool("--json"));
+    let workspace = io.temporary_directory();
+    defer io.delete_directory(workspace, true);
+
+    let executable = system.which("dotnet");
+    match executable {
+        case Some(path) {
+            let result = system.exec(path, ["--version"], timeout_ms: 5000, max_output_bytes: 65536);
+            if result.exit_code != 0 {
+                logger.with_field("stderr", result.stderr).error("runtime probe failed");
+                return result.exit_code;
+            }
+
+            let report = io.combine(workspace, "runtime.txt");
+            io.write_text(report, result.stdout);
+            logger.with_field("report", report).info("runtime probe completed");
+            print(io.read_text(report));
+            return 0;
+        }
+        case None {
+            logger.error("dotnet was not found on PATH");
+            return 1;
+        }
+    }
+}

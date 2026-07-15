@@ -77,6 +77,78 @@ public sealed class CoreModuleTests
     }
 
     [Fact]
+    public void ExpandedIo_PerformsDeterministicCrossPlatformFileAndDirectoryOperations()
+    {
+        var root = VelaIo.TemporaryDirectory("test:1:1");
+        var nested = VelaIo.Combine(root, "nested", "test:1:1");
+        var source = VelaIo.Combine(nested, "source.txt", "test:1:1");
+        var copy = VelaIo.Combine(nested, "copy.txt", "test:1:1");
+        var moved = VelaIo.Combine(nested, "moved.log", "test:1:1");
+        try
+        {
+            VelaIo.CreateDirectory(nested, "test:1:1");
+            VelaIo.WriteLines(source, ["first", "second"], "test:1:1");
+            Assert.Equal(["first", "second"], VelaIo.ReadLines(source, "test:1:1").ToArray());
+            Assert.True(VelaIo.FileSize(source, "test:1:1") > 0);
+
+            VelaIo.CopyFile(source, copy, overwrite: false, sourceLocation: "test:1:1");
+            VelaIo.MoveFile(copy, moved, overwrite: false, sourceLocation: "test:1:1");
+            Assert.Equal("moved.log", VelaIo.FileName(moved, "test:1:1"));
+            Assert.Equal(".log", VelaIo.Extension(moved, "test:1:1"));
+            Assert.Equal(
+                VelaIo.ListFiles(nested, "test:1:1").ToArray().Order(StringComparer.Ordinal),
+                VelaIo.ListFiles(nested, "test:1:1").ToArray());
+            Assert.True(VelaIo.DirectoryExists(nested));
+            Assert.Equal(Path.GetFullPath(nested), VelaIo.FullPath(nested, "test:1:1"));
+            Assert.Throws<VelaIoException>(() => VelaIo.DeleteDirectory(Path.GetPathRoot(root)!, recursive: true, sourceLocation: "test:1:1"));
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                VelaIo.DeleteDirectory(root, recursive: true, sourceLocation: "test:1:1");
+            }
+        }
+    }
+
+    [Fact]
+    public void SystemExec_CapturesExitTimeoutAndTruncationWithinConfiguredBounds()
+    {
+        var shell = VelaSystem.Which(OperatingSystem.IsWindows() ? "cmd.exe" : "sh");
+        Assert.True(shell.HasValue);
+        var successArguments = OperatingSystem.IsWindows()
+            ? new[] { "/d", "/s", "/c", "echo vela" }
+            : new[] { "-c", "printf vela" };
+        var success = VelaSystem.Exec(shell.Value, successArguments, 5_000, 1024, "test:1:1");
+        Assert.Equal(0, success.ExitCode);
+        Assert.Contains("vela", success.StandardOutput, StringComparison.OrdinalIgnoreCase);
+        Assert.False(success.TimedOut);
+
+        var failureArguments = OperatingSystem.IsWindows()
+            ? new[] { "/d", "/s", "/c", "exit 7" }
+            : new[] { "-c", "exit 7" };
+        Assert.Equal(7, VelaSystem.Exec(shell.Value, failureArguments, 5_000, 1024, "test:1:1").ExitCode);
+
+        var timeoutArguments = OperatingSystem.IsWindows()
+            ? new[] { "/d", "/s", "/c", "ping -n 6 127.0.0.1 >nul" }
+            : new[] { "-c", "sleep 2" };
+        var timeout = VelaSystem.Exec(shell.Value, timeoutArguments, 100, 1024, "test:1:1");
+        Assert.True(timeout.TimedOut);
+        Assert.Equal(-1, timeout.ExitCode);
+
+        var largeOutputArguments = OperatingSystem.IsWindows()
+            ? new[] { "/d", "/s", "/c", "for /L %i in (1,1,200) do @echo 1234567890" }
+            : new[] { "-c", "yes x | head -c 10000" };
+        var truncated = VelaSystem.Exec(shell.Value, largeOutputArguments, 5_000, 64, "test:1:1");
+        Assert.True(truncated.Truncated);
+        Assert.True(Encoding.UTF8.GetByteCount(truncated.StandardOutput) <= 64);
+
+        Assert.Throws<VelaProcessException>(() => VelaSystem.Exec(shell.Value, [], 0, 1024, "test:1:1"));
+        Assert.True(VelaSystem.ProcessId() > 0);
+        Assert.False(string.IsNullOrWhiteSpace(VelaSystem.TemporaryDirectory()));
+    }
+
+    [Fact]
     public async Task TcpConnection_RoundTripsWithALocalLoopbackServer()
     {
         using var listener = new TcpListener(IPAddress.Loopback, 0);

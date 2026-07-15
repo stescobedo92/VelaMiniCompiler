@@ -5,7 +5,7 @@ include vela.core.time as time;
 /// @param expected Expected value.
 /// @param actual Actual value.
 /// @param name Test name included in diagnostics.
-fn test_equal_int(expected: Int, actual: Int, name: Text) -> Unit {
+fn test_equal_int(expected: Int, actual: Int, name: Text) -> Void {
     assert expected == actual, name;
 }
 
@@ -13,7 +13,7 @@ fn test_equal_int(expected: Int, actual: Int, name: Text) -> Unit {
 /// @param expected Expected value.
 /// @param actual Actual value.
 /// @param name Test name included in diagnostics.
-fn test_equal_text(expected: Text, actual: Text, name: Text) -> Unit {
+fn test_equal_text(expected: Text, actual: Text, name: Text) -> Void {
     assert expected == actual, name;
 }
 
@@ -26,6 +26,6 @@ fn test_start_timer() -> Long {
 /// @param start Start value returned by test_start_timer.
 /// @param end Current timestamp.
 /// @param name Test name included in diagnostics.
-fn test_assert_elapsed(start: Long, end: Long, name: Text) -> Unit {
+fn test_assert_elapsed(start: Long, end: Long, name: Text) -> Void {
     assert end >= start, name;
 }

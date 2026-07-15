@@ -5,6 +5,9 @@
 artifacts/
 dist/
 publish/
+.release/
+docs/_site/
+docs/api/
 
 # Test and coverage output
 TestResults/

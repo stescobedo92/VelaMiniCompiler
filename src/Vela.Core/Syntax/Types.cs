@@ -15,6 +15,15 @@ public sealed record NamedTypeSyntax(
     public override TextSpan Span => TextSpan.FromBounds(Identifier.Span.Start, (QuestionToken ?? GreaterToken ?? Identifier).Span.End);
 }
 
+/// <summary>Represents a fixed-arity tuple type.</summary>
+public sealed record TupleTypeSyntax(
+    SyntaxToken LeftParenthesis,
+    IReadOnlyList<TypeSyntax> Elements,
+    SyntaxToken RightParenthesis) : TypeSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(LeftParenthesis.Span.Start, RightParenthesis.Span.End);
+}
+
 public sealed record GenericParameterSyntax(
     SyntaxToken Identifier,
     SyntaxToken? ColonToken,
@@ -28,7 +37,11 @@ public sealed record GenericParameterSyntax(
 public sealed record ParameterSyntax(
     SyntaxToken Identifier,
     SyntaxToken ColonToken,
-    TypeSyntax Type) : SyntaxNode
+    TypeSyntax Type,
+    SyntaxToken? EqualsToken = null,
+    ExpressionSyntax? DefaultValue = null) : SyntaxNode
 {
-    public override TextSpan Span => TextSpan.FromBounds(Identifier.Span.Start, Type.Span.End);
+    public bool IsOptional => DefaultValue is not null;
+
+    public override TextSpan Span => TextSpan.FromBounds(Identifier.Span.Start, (DefaultValue ?? (SyntaxNode)Type).Span.End);
 }

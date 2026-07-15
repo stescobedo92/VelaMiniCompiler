@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
@@ -12,6 +13,14 @@ namespace Vela.Runtime;
 /// <summary>Provides JSON operations for the explicitly imported Vela JSON module.</summary>
 public static class VelaJson
 {
+    /// <summary>Returns one valid JSON string literal without using reflection.</summary>
+    public static string Quote(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var encoded = JsonEncodedText.Encode(value).EncodedUtf8Bytes;
+        return "\"" + Encoding.UTF8.GetString(encoded) + "\"";
+    }
+
     /// <summary>Returns whether the input is a complete JSON value.</summary>
     public static bool IsValid(string value)
     {
@@ -134,6 +143,26 @@ public static class VelaTextOperations
     public static string ToUpperInvariant(string value) => value.ToUpperInvariant();
     /// <summary>Applies invariant lower casing.</summary>
     public static string ToLowerInvariant(string value) => value.ToLowerInvariant();
+    public static string FromInt(int value) => value.ToString(CultureInfo.InvariantCulture);
+    public static string FromLong(long value) => value.ToString(CultureInfo.InvariantCulture);
+    public static string FromDouble(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+    public static string FromBool(bool value) => value ? "true" : "false";
+    public static Option<int> TryParseInt(string value) => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? Option.Some(result) : Option.None<int>();
+    public static Option<long> TryParseLong(string value) => long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var result) ? Option.Some(result) : Option.None<long>();
+    public static Option<double> TryParseDouble(string value) => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result) && double.IsFinite(result) ? Option.Some(result) : Option.None<double>();
+    public static Option<bool> TryParseBool(string value) => bool.TryParse(value, out var result) ? Option.Some(result) : Option.None<bool>();
+
+    public static string FromCodePoint(int value, string sourceLocation)
+    {
+        try
+        {
+            return char.ConvertFromUtf32(value);
+        }
+        catch (ArgumentOutOfRangeException exception)
+        {
+            throw new VelaFormatException("Unicode code point is outside the valid range.", sourceLocation, exception);
+        }
+    }
 
     /// <summary>Returns a source-aware text slice.</summary>
     public static string Slice(string value, int start, int length, string sourceLocation)
@@ -220,9 +249,62 @@ public static class VelaRandom
 public static class VelaIo
 {
     public static bool Exists(string path) => File.Exists(path);
+    public static bool DirectoryExists(string path) => Directory.Exists(path);
     public static string ReadText(string path, string sourceLocation) => Execute(() => File.ReadAllText(path, Encoding.UTF8), sourceLocation);
     public static void WriteText(string path, string value, string sourceLocation) => Execute(() => File.WriteAllText(path, value, Encoding.UTF8), sourceLocation);
     public static void AppendText(string path, string value, string sourceLocation) => Execute(() => File.AppendAllText(path, value, Encoding.UTF8), sourceLocation);
+    public static VelaArray<string> ReadLines(string path, string sourceLocation) => Execute(() => new VelaArray<string>(File.ReadAllLines(path, Encoding.UTF8)), sourceLocation);
+    public static void WriteLines(string path, IEnumerable<string> lines, string sourceLocation) => Execute(() => File.WriteAllLines(path, lines, Encoding.UTF8), sourceLocation);
+    public static void DeleteFile(string path, string sourceLocation) => Execute(() => File.Delete(path), sourceLocation);
+    public static void CopyFile(string source, string destination, bool overwrite, string sourceLocation) => Execute(() => File.Copy(source, destination, overwrite), sourceLocation);
+    public static void MoveFile(string source, string destination, bool overwrite, string sourceLocation) => Execute(() => File.Move(source, destination, overwrite), sourceLocation);
+    public static long FileSize(string path, string sourceLocation) => Execute(() => new FileInfo(path).Length, sourceLocation);
+    public static void CreateDirectory(string path, string sourceLocation) => Execute(() => Directory.CreateDirectory(path), sourceLocation);
+
+    public static void DeleteDirectory(string path, bool recursive, string sourceLocation)
+    {
+        ValidateDirectoryDeletion(path, recursive, sourceLocation);
+        Execute(() => Directory.Delete(path, recursive), sourceLocation);
+    }
+
+    public static VelaArray<string> ListFiles(string path, string sourceLocation) => Execute(
+        () => new VelaArray<string>(Directory.EnumerateFiles(path).Order(StringComparer.Ordinal)),
+        sourceLocation);
+
+    public static VelaArray<string> ListDirectories(string path, string sourceLocation) => Execute(
+        () => new VelaArray<string>(Directory.EnumerateDirectories(path).Order(StringComparer.Ordinal)),
+        sourceLocation);
+
+    public static string Combine(string left, string right, string sourceLocation) => Execute(() => Path.Combine(left, right), sourceLocation);
+    public static string FileName(string path, string sourceLocation) => Execute(() => Path.GetFileName(path), sourceLocation);
+    public static string Extension(string path, string sourceLocation) => Execute(() => Path.GetExtension(path), sourceLocation);
+    public static string FullPath(string path, string sourceLocation) => Execute(() => Path.GetFullPath(path), sourceLocation);
+
+    public static string TemporaryFile(string sourceLocation) => Execute(Path.GetTempFileName, sourceLocation);
+
+    public static string TemporaryDirectory(string sourceLocation) => Execute(
+        () => Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "vela-" + Guid.NewGuid().ToString("N"))).FullName,
+        sourceLocation);
+
+    private static void ValidateDirectoryDeletion(string path, bool recursive, string sourceLocation)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new VelaIoException("Directory deletion requires a non-empty path.", sourceLocation);
+        }
+
+        if (!recursive)
+        {
+            return;
+        }
+
+        var fullPath = Execute(() => Path.GetFullPath(path), sourceLocation);
+        var root = Path.GetPathRoot(fullPath);
+        if (string.Equals(fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), root?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            throw new VelaIoException("Recursive deletion of a filesystem root is forbidden.", sourceLocation);
+        }
+    }
 
     private static T Execute<T>(Func<T> operation, string sourceLocation)
     {
@@ -239,6 +321,10 @@ public static class VelaIo
             throw new VelaIoException(exception.Message, sourceLocation, exception);
         }
         catch (ArgumentException exception)
+        {
+            throw new VelaIoException(exception.Message, sourceLocation, exception);
+        }
+        catch (NotSupportedException exception)
         {
             throw new VelaIoException(exception.Message, sourceLocation, exception);
         }
@@ -259,6 +345,10 @@ public static class VelaIo
             throw new VelaIoException(exception.Message, sourceLocation, exception);
         }
         catch (ArgumentException exception)
+        {
+            throw new VelaIoException(exception.Message, sourceLocation, exception);
+        }
+        catch (NotSupportedException exception)
         {
             throw new VelaIoException(exception.Message, sourceLocation, exception);
         }

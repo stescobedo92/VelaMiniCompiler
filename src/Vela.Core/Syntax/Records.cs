@@ -10,7 +10,8 @@ public sealed record RecordDeclarationSyntax(
     SyntaxToken LeftBrace,
     IReadOnlyList<RecordMemberSyntax> Members,
     SyntaxToken RightBrace,
-    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds(RecordKeyword.Span.Start, RightBrace.Span.End);
 }
@@ -21,7 +22,8 @@ public sealed record RecordFieldSyntax(
     SyntaxToken Identifier,
     SyntaxToken ColonToken,
     TypeSyntax Type,
-    DocumentationCommentSyntax? Documentation = null) : RecordMemberSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : RecordMemberSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds(Identifier.Span.Start, Type.Span.End);
 }

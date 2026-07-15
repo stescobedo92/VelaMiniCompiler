@@ -1,0 +1,24 @@
+// Executes the trusted local .NET host directly: no shell is involved.
+include vela.core.system as system;
+
+fn main() -> Int {
+    let executable = system.which("dotnet");
+    match executable {
+        case Some(path) {
+            let result = system.exec(
+                path,
+                ["--version"],
+                timeout_ms: 5000,
+                max_output_bytes: 65536
+            );
+            print(result.stdout);
+            if result.timed_out { return 2; }
+            if result.truncated { return 3; }
+            return result.exit_code;
+        }
+        case None {
+            print("dotnet was not found on PATH");
+            return 1;
+        }
+    }
+}

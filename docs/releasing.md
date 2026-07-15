@@ -16,19 +16,24 @@ create a GitHub Release unless signing is enabled.
 
 | Platform | Architectures | Artifacts | Global command |
 | --- | --- | --- | --- |
-| Windows | x64 | standalone `.exe`, `.msi`, graphical `-setup.exe` | machine `PATH` points to `C:\Program Files\Vela` |
-| macOS | Apple Silicon, Intel | standalone executable, signed/notarized `.pkg` and `.dmg` | `/usr/local/bin/vela` symlink |
-| Linux | x64 | standalone executable, `.deb`, `.rpm`, GPG signatures | `/usr/local/bin/vela` symlink |
+| Windows | x64 | standalone `.exe`, portable `.zip`, `.msi`, graphical `-setup.exe` | machine `PATH` points to `C:\Program Files\Vela` |
+| macOS | Apple Silicon, Intel | standalone executable, portable `.tar.gz`, signed/notarized `.pkg` and `.dmg` | `/usr/local/bin/vela` symlink |
+| Linux | x64 | standalone executable, portable `.tar.gz`, `.deb`, `.rpm`, GPG signatures | `/usr/local/bin/vela` symlink |
 
 The Windows setup executable is a WiX Burn graphical wizard. It installs the
 MSI per-machine, requests elevation, supports repair/uninstall, and updates the
 machine `PATH`. The MSI remains suitable for enterprise deployment tools.
 
 The macOS installer stores the binary at `/usr/local/lib/vela/vela` and creates
-`/usr/local/bin/vela`. DEB and RPM packages use that same layout. Every platform
-job creates a GitHub provenance attestation for the standalone compiler. Release
-assets include `SHA256SUMS`; Linux also publishes detached signatures and
-`vela-linux-signing-key.asc`.
+`/usr/local/bin/vela`. DEB and RPM packages use that same layout. Installers and
+portable archives include `runtime/` plus `global.json`; this support project is
+what lets an installed compiler lower and publish programs outside the Vela
+repository. The bare standalone binary is supplied for inspection, while the
+portable archive is the complete relocatable distribution.
+
+Every platform job creates a GitHub provenance attestation for the standalone
+compiler. Release assets include `SHA256SUMS`; Linux also publishes detached
+signatures and `vela-linux-signing-key.asc`.
 
 ## Configure signing
 
@@ -53,6 +58,10 @@ full fingerprint. It stays only in the protected environment; the workflow
 exports its public key to the release. Signing secrets are never available to
 pull-request workflows.
 
+Before any platform publish starts, `Validate signing credentials` reports the
+exact missing secret names and fails closed. `LINUX_GPG_PASSPHRASE` remains
+optional; every other secret in the table is required for a signed tag.
+
 ## Create a release
 
 After configuring the credentials:
@@ -68,8 +77,10 @@ The tag runs signing, packaging, provenance attestation, checksum generation,
 and GitHub release creation. Tags must use exactly `vX.Y.Z`, because MSI
 versions require numeric three-part versions.
 
-For a dry run, use **Actions → Release compiler → Run workflow**, set
-`sign=false` and `publish=false`. For a recovery release, use
+For a quick unsigned packaging validation, run **Package smoke tests**; it builds
+and extracts every installer format and invokes the compiler from the installed
+layout. For a versioned dry run, use **Actions → Release compiler → Run
+workflow**, set `sign=false` and `publish=false`. For a recovery release, use
 `sign=true` and `publish=true` only when the corresponding signed Git tag already
 exists.
 
@@ -92,8 +103,9 @@ For unattended installation:
 msiexec /i .\vela-0.2.0-win-x64.msi /qn /norestart
 ```
 
-The installer adds `C:\Program Files\Vela` to the machine `PATH`. Uninstall via
-**Installed apps**.
+The installer adds `C:\Program Files\Vela` to the machine `PATH` and installs
+runtime support under `C:\Program Files\Vela\runtime`. Uninstall via **Installed
+apps**.
 
 ### macOS
 

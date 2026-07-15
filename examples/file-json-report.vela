@@ -5,9 +5,9 @@ include vela.core.io;
 include vela.core.json;
 include vela.core.text;
 
-class Report {
-    title: Text;
-    valid: Bool;
+class Report(report_title: Text, report_valid: Bool) {
+    title: Text = report_title;
+    valid: Bool = report_valid;
 
     fn summary() -> Text {
         if self.valid {

@@ -1,0 +1,12 @@
+- name: Overview
+  href: index.md
+- name: Guides
+  href: articles/
+- name: Language reference
+  href: Vela-language.md
+- name: Collections
+  href: Vela-collections.md
+- name: Compiler API
+  href: api/
+- name: Release and installation
+  href: releasing.md

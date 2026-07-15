@@ -11,6 +11,15 @@ namespace Vela.Backend;
 internal sealed class CSharpEmitter
 {
     private static readonly string[] EmptyGenericNames = [];
+    private static readonly string[] OptionMatchVariants = ["Some", "None"];
+    private static readonly string[] ResultMatchVariants = ["Ok", "Err"];
+    private static readonly CoreParameter[] SystemExecParameters =
+    [
+        new("program", VelaType.Text),
+        new("args", new VelaType("List", [VelaType.Text])),
+        new("timeout_ms", VelaType.Int, "30000"),
+        new("max_output_bytes", VelaType.Int, "1048576")
+    ];
     private static readonly HashSet<string> CSharpKeywords = new(StringComparer.Ordinal)
     {
         "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked", "class", "const", "continue",
@@ -23,7 +32,8 @@ internal sealed class CSharpEmitter
     private static readonly HashSet<string> CoreModules = new(StringComparer.Ordinal)
     {
         "vela.core.json", "vela.core.crypto", "vela.core.tcp", "vela.core.text", "vela.core.math",
-        "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env", "vela.concurrent"
+        "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env",
+        "vela.core.system", "vela.core.console", "vela.concurrent"
     };
     private static readonly Dictionary<string, int> RuntimeExceptionRanks = new(StringComparer.Ordinal)
     {
@@ -37,7 +47,8 @@ internal sealed class CSharpEmitter
         ["VelaIndexOutOfRangeException"] = 1,
         ["VelaInvalidCastException"] = 1,
         ["VelaCancellationException"] = 1,
-        ["VelaCleanupException"] = 1
+        ["VelaCleanupException"] = 1,
+        ["VelaProcessException"] = 1
     };
 
     private readonly DiagnosticBag _diagnostics;
@@ -62,6 +73,8 @@ internal sealed class CSharpEmitter
     private int _deferScopeIdentifier;
     private int _deferSnapshotIdentifier;
     private int _runtimeExceptionMemberIdentifier;
+    private int _destructuringIdentifier;
+    private int _callArgumentIdentifier;
     private bool _isEmittingAsyncFunction;
 
     public CSharpEmitter(
@@ -204,7 +217,7 @@ internal sealed class CSharpEmitter
             return;
         }
 
-        var returnType = ResolveType(function.ReturnType, EmptyGenericNames, function.Identifier.Span, VelaType.Unit);
+        var returnType = ResolveType(function.ReturnType, EmptyGenericNames, function.Identifier.Span, VelaType.Unit, allowVoid: true);
         var parameterTypes = function.Parameters.Select(parameter => ResolveType(parameter.Type, EmptyGenericNames, parameter.Type.Span)).ToArray();
         if (!IsFfiSafe(returnType) || parameterTypes.Any(type => !IsFfiSafe(type)))
         {
@@ -388,14 +401,22 @@ internal sealed class CSharpEmitter
                 Report("VEL3006", main.Syntax.Identifier.Span, "The entry function 'main' cannot declare generic parameters.", "Declare a non-generic 'fn main() -> Int:'.");
             }
 
-            var returnType = ResolveType(main.Syntax.ReturnType, main.GenericNames, main.Syntax.Identifier.Span, defaultType: VelaType.WholeNumber);
-            if (!returnType.IsSameAs(VelaType.WholeNumber))
+            var returnType = ResolveType(main.Syntax.ReturnType, main.GenericNames, main.Syntax.Identifier.Span, defaultType: VelaType.WholeNumber, allowVoid: true);
+            if (!returnType.IsSameAs(VelaType.WholeNumber) && !returnType.IsSameAs(VelaType.Unit))
             {
-                Report("VEL3007", main.Syntax.Identifier.Span, "The entry function 'main' must return Int.", "Change the declaration to 'fn main() -> Int:'.");
+                Report("VEL3020", main.Syntax.Identifier.Span, "The entry function 'main' must return Int or Void.", "Change the declaration to 'fn main() -> Int { ... }' or 'fn main() -> Void { ... }'.");
             }
 
             var invocation = main.Syntax.AsyncKeyword is null ? "main()" : "main().GetAwaiter().GetResult()";
-            _writer.WriteLine($"return checked((int){invocation});");
+            if (returnType.IsSameAs(VelaType.Unit))
+            {
+                _writer.WriteLine($"{invocation};");
+                _writer.WriteLine("return 0;");
+            }
+            else
+            {
+                _writer.WriteLine($"return checked((int){invocation});");
+            }
         }
         else if (root.Members.Any(static member => member is not FunctionDeclarationSyntax and not RecordDeclarationSyntax and not ObjectDeclarationSyntax and not EnumDeclarationSyntax and not IncludeDirectiveSyntax))
         {
@@ -412,6 +433,7 @@ internal sealed class CSharpEmitter
 
     private void EmitEnum(EnumDeclarationSyntax declaration)
     {
+        ValidateAttributes(declaration.Attributes ?? [], AttributeTarget.Type);
         var accessibility = declaration.PublicKeyword is null ? "internal" : "public";
         WriteLineDirective(declaration);
         _writer.WriteLine($"{accessibility} enum {EscapeIdentifier(declaration.Identifier.Text)}");
@@ -420,6 +442,7 @@ internal sealed class CSharpEmitter
         for (var index = 0; index < declaration.Members.Count; index++)
         {
             var member = declaration.Members[index];
+            ValidateAttributes(member.Attributes ?? [], AttributeTarget.EnumMember);
             var suffix = index == declaration.Members.Count - 1 ? string.Empty : ",";
             _writer.WriteLine(EscapeIdentifier(member.Identifier.Text) + suffix);
         }
@@ -430,9 +453,14 @@ internal sealed class CSharpEmitter
 
     private void EmitRecord(RecordDeclarationSyntax record)
     {
+        ValidateAttributes(record.Attributes ?? [], AttributeTarget.Type);
         var symbol = _records[record.Identifier.Text];
         var genericNames = symbol.GenericNames;
         var fields = record.Members.OfType<RecordFieldSyntax>().ToArray();
+        foreach (var field in fields)
+        {
+            ValidateAttributes(field.Attributes ?? [], AttributeTarget.Field);
+        }
 
         foreach (var method in record.Members.OfType<RecordMethodSyntax>())
         {
@@ -449,6 +477,7 @@ internal sealed class CSharpEmitter
     private void EmitObject(ObjectDeclarationSyntax declaration)
     {
         var symbol = _objects[declaration.Identifier.Text];
+        ValidateAttributes(declaration.Attributes ?? [], AttributeTarget.Type);
         ValidateGenericConstraints(declaration.GenericParameters);
         var genericNames = symbol.GenericNames;
         var accessibility = declaration.PublicKeyword is null ? "internal" : "public";
@@ -470,10 +499,11 @@ internal sealed class CSharpEmitter
             _writer.Indent();
             foreach (var method in declaration.Members.OfType<InterfaceMethodSyntax>())
             {
+                ValidateAttributes(method.Attributes ?? [], AttributeTarget.Method);
                 ValidateGenericConstraints(method.GenericParameters);
                 var parameters = string.Join(", ", method.Parameters.Select(parameter =>
                     $"{CSharpType(ResolveType(parameter.Type, genericNames, parameter.Type.Span))} {EscapeIdentifier(parameter.Identifier.Text)}"));
-                var returnType = ResolveType(method.ReturnType, genericNames, method.Identifier.Span, VelaType.Unit);
+                var returnType = ResolveType(method.ReturnType, genericNames, method.Identifier.Span, VelaType.Unit, allowVoid: true);
                 var emittedReturnType = method.AsyncKeyword is null ? CSharpType(returnType) : CSharpTaskType(returnType);
                 _writer.WriteLine($"{emittedReturnType} {EscapeIdentifier(method.Identifier.Text)}({parameters});");
             }
@@ -491,16 +521,78 @@ internal sealed class CSharpEmitter
         _writer.Indent();
 
         var fields = declaration.Members.OfType<ObjectFieldSyntax>().ToArray();
+        var constructorParameters = declaration.ConstructorParameters;
+        var constructorScope = new Scope(null);
+        var methodConstructorScope = new Scope(null);
+        if (declaration.Kind == ObjectDeclarationKind.Class)
+        {
+            foreach (var parameter in constructorParameters)
+            {
+                var parameterType = ResolveType(parameter.Type, genericNames, parameter.Type.Span);
+                ValidateParameterDefault(parameter, parameterType, constructorScope);
+                AddVariable(constructorScope, parameter.Identifier.Text, new VariableSymbol(parameterType, false), parameter.Identifier.Span);
+                var captureName = ConstructorCaptureName(parameter.Identifier.Text);
+                AddVariable(methodConstructorScope, parameter.Identifier.Text, new VariableSymbol(parameterType, false, $"this.{captureName}"), parameter.Identifier.Span);
+                _writer.WriteLine($"private readonly {CSharpType(parameterType)} {captureName};");
+            }
+
+            if (constructorParameters.Count > 0)
+            {
+                _writer.WriteLine();
+            }
+        }
+
         foreach (var field in fields)
         {
+            ValidateAttributes(field.Attributes ?? [], AttributeTarget.Field);
             var modifier = field.IsMutable ? "public" : "public readonly";
             var fieldType = ResolveType(field.Type, genericNames, field.Type.Span);
             _writer.WriteLine($"{modifier} {CSharpType(fieldType)} {EscapeIdentifier(field.Identifier.Text)};");
         }
 
-        if (fields.Length > 0)
+        if (declaration.Kind == ObjectDeclarationKind.Class)
+        {
+            if (fields.Length > 0 || constructorParameters.Count > 0)
+            {
+                _writer.WriteLine();
+            }
+
+            var parameters = string.Join(", ", constructorParameters.Select(parameter =>
+                $"{CSharpType(ResolveType(parameter.Type, genericNames, parameter.Type.Span))} {EscapeIdentifier(parameter.Identifier.Text)}"));
+            _writer.WriteLine($"public {EscapeIdentifier(declaration.Identifier.Text)}({parameters})");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            foreach (var parameter in constructorParameters)
+            {
+                _writer.WriteLine($"this.{ConstructorCaptureName(parameter.Identifier.Text)} = {EscapeIdentifier(parameter.Identifier.Text)};");
+            }
+
+            foreach (var field in fields)
+            {
+                var fieldType = ResolveType(field.Type, genericNames, field.Type.Span);
+                if (field.Initializer is null)
+                {
+                    Report("VEL3021", field.Identifier.Span, $"Class field '{field.Identifier.Text}' must have an initializer.", "Initialize the field from a primary constructor parameter or another expression.");
+                    _writer.WriteLine($"this.{EscapeIdentifier(field.Identifier.Text)} = {DefaultValue(fieldType)};");
+                    continue;
+                }
+
+                var initializer = EmitExpression(field.Initializer, constructorScope);
+                EnsureAssignable(fieldType, initializer.Type, field.Initializer.Span);
+                _writer.WriteLine($"this.{EscapeIdentifier(field.Identifier.Text)} = {CoerceCode(fieldType, initializer, field.Initializer)};");
+            }
+
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+        else if (fields.Length > 0)
         {
             _writer.WriteLine();
+            foreach (var field in fields.Where(static field => field.Initializer is not null))
+            {
+                Report("VEL3021", field.Initializer!.Span, "Struct fields cannot declare initializers in this language version.", "Pass field values when constructing the struct.");
+            }
+
             var parameters = string.Join(", ", fields.Select(field =>
                 $"{CSharpType(ResolveType(field.Type, genericNames, field.Type.Span))} {EscapeIdentifier(field.Identifier.Text)}"));
             _writer.WriteLine($"public {EscapeIdentifier(declaration.Identifier.Text)}({parameters})");
@@ -522,7 +614,7 @@ internal sealed class CSharpEmitter
             foreach (var method in declaration.Members.OfType<ObjectMethodSyntax>())
             {
                 _writer.WriteLine();
-                EmitObjectMethod(method.Function, genericNames);
+                EmitObjectMethod(method.Function, genericNames, methodConstructorScope);
             }
         }
         finally
@@ -534,17 +626,22 @@ internal sealed class CSharpEmitter
         _writer.WriteLine("}");
     }
 
-    private void EmitObjectMethod(FunctionDeclarationSyntax function, IReadOnlyCollection<string> objectGenericNames)
+    private void EmitObjectMethod(
+        FunctionDeclarationSyntax function,
+        IReadOnlyCollection<string> objectGenericNames,
+        Scope constructorScope)
     {
+        ValidateAttributes(function.Attributes ?? [], AttributeTarget.Method);
         ValidateGenericConstraints(function.GenericParameters);
         var genericNames = function.GenericParameters.Select(static parameter => parameter.Identifier.Text).ToArray();
-        var returnType = ResolveType(function.ReturnType, genericNames.Concat(objectGenericNames).ToArray(), function.Identifier.Span, VelaType.Unit);
+        var returnType = ResolveType(function.ReturnType, genericNames.Concat(objectGenericNames).ToArray(), function.Identifier.Span, VelaType.Unit, allowVoid: true);
         var parameters = new List<string>();
-        var scope = new Scope(null);
+        var scope = new Scope(constructorScope);
 
         foreach (var parameter in function.Parameters)
         {
             var parameterType = ResolveType(parameter.Type, genericNames.Concat(objectGenericNames).ToArray(), parameter.Type.Span);
+            ValidateParameterDefault(parameter, parameterType, scope);
             AddVariable(scope, parameter.Identifier.Text, new VariableSymbol(parameterType, false), parameter.Identifier.Span);
             parameters.Add($"{CSharpType(parameterType)} {EscapeIdentifier(parameter.Identifier.Text)}");
         }
@@ -587,45 +684,81 @@ internal sealed class CSharpEmitter
 
     private void ValidateImplementedInterfaces(ObjectSymbol symbol)
     {
+        var seenInterfaces = new HashSet<string>(StringComparer.Ordinal);
         foreach (var typeSyntax in symbol.Syntax.ImplementedInterfaces)
         {
-            if (!_objects.TryGetValue(((NamedTypeSyntax)typeSyntax).Identifier.Text, out var interfaceSymbol) || interfaceSymbol.Syntax.Kind != ObjectDeclarationKind.Interface)
+            var implementedType = ResolveType(typeSyntax, symbol.GenericNames, typeSyntax.Span);
+            if (!seenInterfaces.Add(implementedType.ToString()))
             {
-                Report("VEL3001", typeSyntax.Span, $"Unknown interface '{typeSyntax}'.", "Declare the interface before implementing it.");
+                Report("VEL3022", typeSyntax.Span, $"Interface '{implementedType}' is implemented more than once.", "Remove the duplicate interface from the implements list.");
                 continue;
             }
+
+            if (typeSyntax is not NamedTypeSyntax named
+                || !_objects.TryGetValue(named.Identifier.Text, out var interfaceSymbol)
+                || interfaceSymbol.Syntax.Kind != ObjectDeclarationKind.Interface)
+            {
+                Report("VEL3022", typeSyntax.Span, $"Unknown interface '{implementedType}'.", "Declare the interface before implementing it and verify the generic arguments.");
+                continue;
+            }
+
+            var interfaceSubstitutions = CreateGenericSubstitutions(interfaceSymbol.GenericNames, implementedType.TypeArguments.ToArray());
 
             foreach (var required in interfaceSymbol.Syntax.Members.OfType<InterfaceMethodSyntax>())
             {
                 var implementation = symbol.Syntax.Members.OfType<ObjectMethodSyntax>()
                     .Select(static method => method.Function)
-                    .FirstOrDefault(candidate => candidate.Identifier.Text == required.Identifier.Text && candidate.Parameters.Count == required.Parameters.Count);
+                    .FirstOrDefault(candidate => candidate.Identifier.Text == required.Identifier.Text
+                        && candidate.GenericParameters.Count == required.GenericParameters.Count
+                        && candidate.Parameters.Count == required.Parameters.Count);
                 if (implementation is null)
                 {
-                    Report("VEL3006", symbol.Syntax.Identifier.Span, $"Type '{symbol.Syntax.Identifier.Text}' does not implement interface method '{required.Identifier.Text}'.", "Add a method with the interface signature.");
+                    Report("VEL3022", symbol.Syntax.Identifier.Span, $"Class '{symbol.Syntax.Identifier.Text}' does not implement '{interfaceSymbol.Syntax.Identifier.Text}.{FormatInterfaceSignature(required)}'.", "Add a method with exactly the required parameters, return type, generic arity, and async modifier.");
                     continue;
                 }
 
                 if ((required.AsyncKeyword is not null) != (implementation.AsyncKeyword is not null))
                 {
-                    Report("VEL3006", implementation.Identifier.Span, $"Method '{implementation.Identifier.Text}' does not match the async contract required by '{interfaceSymbol.Syntax.Identifier.Text}'.", "Mark both declarations async or make both synchronous.");
+                    Report("VEL3022", implementation.Identifier.Span, $"Method '{implementation.Identifier.Text}' does not match the async contract required by '{interfaceSymbol.Syntax.Identifier.Text}'.", "Mark both declarations async or make both synchronous.");
+                }
+
+                var expectedReturn = ResolveType(required.ReturnType, interfaceSymbol.GenericNames, required.Identifier.Span, VelaType.Unit, allowVoid: true).Substitute(interfaceSubstitutions);
+                var actualReturn = ResolveType(implementation.ReturnType, implementation.GenericParameters.Select(static parameter => parameter.Identifier.Text).Concat(symbol.GenericNames).ToArray(), implementation.Identifier.Span, VelaType.Unit, allowVoid: true);
+                if (!expectedReturn.IsSameAs(actualReturn))
+                {
+                    Report("VEL3022", implementation.ReturnType?.Span ?? implementation.Identifier.Span, $"Method '{implementation.Identifier.Text}' returns {actualReturn}, but interface '{interfaceSymbol.Syntax.Identifier.Text}' requires {expectedReturn}.", "Use the exact return type declared by the interface.");
+                }
+
+                for (var index = 0; index < required.Parameters.Count; index++)
+                {
+                    var expected = ResolveType(required.Parameters[index].Type, interfaceSymbol.GenericNames, required.Parameters[index].Type.Span).Substitute(interfaceSubstitutions);
+                    var actual = ResolveType(implementation.Parameters[index].Type, symbol.GenericNames, implementation.Parameters[index].Type.Span);
+                    if (!expected.IsSameAs(actual))
+                    {
+                        Report("VEL3022", implementation.Parameters[index].Type.Span, $"Parameter '{implementation.Parameters[index].Identifier.Text}' has type {actual}, but interface '{interfaceSymbol.Syntax.Identifier.Text}' requires {expected}.", "Use the exact parameter type declared by the interface.");
+                    }
                 }
             }
         }
     }
 
+    private static string FormatInterfaceSignature(InterfaceMethodSyntax method) =>
+        $"{method.Identifier.Text}({string.Join(", ", method.Parameters.Select(static parameter => parameter.Type.ToString()))})";
+
     private void EmitFunction(FunctionDeclarationSyntax function)
     {
+        ValidateAttributes(function.Attributes ?? [], AttributeTarget.Function);
         var symbol = _functions[function.Identifier.Text];
         var genericNames = symbol.GenericNames;
         ValidateGenericConstraints(function.GenericParameters);
-        var returnType = ResolveType(function.ReturnType, genericNames, function.Identifier.Span, defaultType: VelaType.Unit);
+        var returnType = ResolveType(function.ReturnType, genericNames, function.Identifier.Span, defaultType: VelaType.Unit, allowVoid: true);
         var parameters = new List<string>();
         var scope = new Scope(null);
 
         foreach (var parameter in function.Parameters)
         {
             var parameterType = ResolveType(parameter.Type, genericNames, parameter.Type.Span);
+            ValidateParameterDefault(parameter, parameterType, scope);
             AddVariable(scope, parameter.Identifier.Text, new VariableSymbol(parameterType, false), parameter.Identifier.Span);
             parameters.Add($"{CSharpType(parameterType)} {EscapeIdentifier(parameter.Identifier.Text)}");
         }
@@ -754,6 +887,12 @@ internal sealed class CSharpEmitter
             case VarStatementSyntax variable:
                 EmitVariable(variable.Identifier.Text, variable.Type, variable.Initializer, true, scope, variable.Span);
                 return false;
+            case TupleDestructuringStatementSyntax tupleDestructuring:
+                EmitTupleDestructuring(tupleDestructuring, scope);
+                return false;
+            case RecordDestructuringStatementSyntax recordDestructuring:
+                EmitRecordDestructuring(recordDestructuring, scope);
+                return false;
             case ReturnStatementSyntax returnStatement:
                 EmitReturn(returnStatement, scope, returnType);
                 return true;
@@ -781,6 +920,8 @@ internal sealed class CSharpEmitter
                 return EmitLoopControl(continueStatement.ContinueKeyword, "continue");
             case SwitchStatementSyntax selection:
                 return EmitSwitch(selection, scope, returnType, isTail);
+            case MatchStatementSyntax match:
+                return EmitMatch(match, scope, returnType, isTail);
             case FunctionDeclarationSyntax:
             case RecordDeclarationSyntax:
                 Report("VEL3012", statement.Span, "Declarations are only allowed at the top level.", "Move this declaration outside the current function or block.");
@@ -802,6 +943,80 @@ internal sealed class CSharpEmitter
         _writer.WriteLine($"{CSharpType(declaredType)} {EscapeIdentifier(name)} = {CoerceCode(declaredType, initializerResult, initializer)};");
     }
 
+    private void EmitTupleDestructuring(TupleDestructuringStatementSyntax statement, Scope scope)
+    {
+        var value = EmitExpression(statement.Initializer, scope);
+        if (value.Type.Name != "Tuple")
+        {
+            Report("VEL3025", statement.Initializer.Span, $"Cannot tuple-destructure a value of type '{value.Type}'.", "Use a tuple value with the same number of elements.");
+        }
+        else if (value.Type.TypeArguments.Count != statement.Bindings.Count)
+        {
+            Report("VEL3025", statement.Span, $"Tuple destructuring expects {statement.Bindings.Count} element(s), but the value contains {value.Type.TypeArguments.Count}.", "Use exactly one binding per tuple element.");
+        }
+
+        var temporary = "__velaDestructure" + _destructuringIdentifier++.ToString(CultureInfo.InvariantCulture);
+        _writer.WriteLine($"var {temporary} = {value.Code};");
+        for (var index = 0; index < statement.Bindings.Count; index++)
+        {
+            var binding = statement.Bindings[index];
+            if (binding.Text == "_")
+            {
+                continue;
+            }
+
+            var elementType = value.Type.Name == "Tuple" && index < value.Type.TypeArguments.Count
+                ? value.Type.TypeArguments[index]
+                : VelaType.Unknown;
+            AddVariable(scope, binding.Text, new VariableSymbol(elementType, false), binding.Span);
+            _writer.WriteLine($"{CSharpType(elementType)} {EscapeIdentifier(binding.Text)} = {temporary}.Item{(index + 1).ToString(CultureInfo.InvariantCulture)};");
+        }
+    }
+
+    private void EmitRecordDestructuring(RecordDestructuringStatementSyntax statement, Scope scope)
+    {
+        var value = EmitExpression(statement.Initializer, scope);
+        if (!_records.TryGetValue(statement.RecordType.Text, out var record))
+        {
+            Report("VEL3025", statement.RecordType.Span, $"Unknown record '{statement.RecordType.Text}' in destructuring pattern.", "Use a declared record type.");
+            return;
+        }
+
+        if (!string.Equals(value.Type.Name, statement.RecordType.Text, StringComparison.Ordinal))
+        {
+            Report("VEL3025", statement.Initializer.Span, $"Record destructuring expects '{statement.RecordType.Text}', but found '{value.Type}'.", "Use a value of the record type named by the pattern.");
+        }
+
+        var fields = record.Syntax.Members.OfType<RecordFieldSyntax>().ToDictionary(static field => field.Identifier.Text, StringComparer.Ordinal);
+        var namedFields = statement.Fields.Where(static field => field.Text != "_").Select(static field => field.Text).ToHashSet(StringComparer.Ordinal);
+        var missing = fields.Keys.Where(name => !namedFields.Contains(name)).OrderBy(static name => name, StringComparer.Ordinal).ToArray();
+        if (missing.Length > 0)
+        {
+            Report("VEL3025", statement.Span, $"Record destructuring is missing field(s): {string.Join(", ", missing)}.", "List every record field exactly once or use tuple destructuring for positional data.");
+        }
+
+        var temporary = "__velaDestructure" + _destructuringIdentifier++.ToString(CultureInfo.InvariantCulture);
+        _writer.WriteLine($"var {temporary} = {value.Code};");
+        var substitutions = CreateGenericSubstitutions(record.GenericNames, value.Type.TypeArguments.ToArray());
+        foreach (var binding in statement.Fields)
+        {
+            if (binding.Text == "_")
+            {
+                continue;
+            }
+
+            if (!fields.TryGetValue(binding.Text, out var field))
+            {
+                Report("VEL3025", binding.Span, $"Record '{statement.RecordType.Text}' has no field named '{binding.Text}'.", "Use one of the declared record fields.");
+                continue;
+            }
+
+            var fieldType = ResolveType(field.Type, record.GenericNames, field.Type.Span).Substitute(substitutions);
+            AddVariable(scope, binding.Text, new VariableSymbol(fieldType, false), binding.Span);
+            _writer.WriteLine($"{CSharpType(fieldType)} {EscapeIdentifier(binding.Text)} = {temporary}.{EscapeIdentifier(binding.Text)};");
+        }
+    }
+
     private void EmitReturn(ReturnStatementSyntax statement, Scope scope, VelaType returnType)
     {
         if (statement.Expression is null)
@@ -816,6 +1031,14 @@ internal sealed class CSharpEmitter
         }
 
         var expression = EmitExpression(statement.Expression, scope);
+        if (returnType.IsSameAs(VelaType.Unit))
+        {
+            Report("VEL3020", statement.Expression.Span, "A Void function cannot return a value.", "Remove the expression and use 'return;'.");
+            _writer.WriteLine($"{expression.Code};");
+            _writer.WriteLine("return;");
+            return;
+        }
+
         EnsureAssignable(returnType, expression.Type, statement.Expression.Span);
         _writer.WriteLine($"return {CoerceCode(returnType, expression, statement.Expression)};");
     }
@@ -908,12 +1131,15 @@ internal sealed class CSharpEmitter
 
         var snapshotScope = new Scope(scope);
         var callee = SnapshotDeferredCallee(call.Callee, scope, snapshotScope);
-        var arguments = new List<ExpressionSyntax>(call.Arguments.Count);
+        var arguments = new List<CallArgumentSyntax>(call.Arguments.Count);
         foreach (var argument in call.Arguments)
         {
-            var value = EmitExpression(argument, scope);
+            var value = EmitExpression(argument.Expression, scope);
             var name = CreateDeferSnapshot(value, snapshotScope);
-            arguments.Add(new NameExpressionSyntax(new SyntaxToken(TokenKind.Identifier, argument.Span, name)));
+            arguments.Add(new CallArgumentSyntax(
+                argument.Name,
+                argument.ColonToken,
+                new NameExpressionSyntax(new SyntaxToken(TokenKind.Identifier, argument.Span, name))));
         }
 
         var snapshot = new CallExpressionSyntax(
@@ -1146,6 +1372,186 @@ internal sealed class CSharpEmitter
         return isTail && everyCaseReturns && (defaultReturns || isExhaustiveEnum);
     }
 
+    private bool EmitMatch(MatchStatementSyntax match, Scope scope, VelaType returnType, bool isTail)
+    {
+        var subject = EmitExpression(match.Expression, scope);
+        var isOption = subject.Type.Name == "Option" && subject.Type.TypeArguments.Count == 1;
+        var isResult = subject.Type.Name == "Result" && subject.Type.TypeArguments.Count == 2;
+        var isEnum = _enums.TryGetValue(subject.Type.Name, out var enumSymbol);
+        var isLiteralType = subject.Type.Name is "Int" or "UInt" or "Long" or "Bool" or "Text";
+        if (!isOption && !isResult && !isEnum && !isLiteralType)
+        {
+            Report("VEL3024", match.Expression.Span, $"Match does not support values of type '{subject.Type}'.", "Use an enum, Option, Result, Int, UInt, Long, Bool, or Text value.");
+        }
+
+        var subjectName = "__velaMatch" + _switchIdentifier++.ToString(CultureInfo.InvariantCulture);
+        _writer.WriteLine($"var {subjectName} = {subject.Code};");
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var hasCase = false;
+        var everyCaseReturns = match.Cases.Count > 0;
+        foreach (var matchCase in match.Cases)
+        {
+            var caseScope = new Scope(scope);
+            string condition;
+            switch (matchCase.Pattern)
+            {
+                case VariantMatchPatternSyntax variant:
+                    condition = BindVariantPattern(variant, subject.Type, subjectName, isOption, isResult, caseScope, seen);
+                    break;
+                case ValueMatchPatternSyntax valuePattern:
+                    if (isOption || isResult)
+                    {
+                        Report("VEL3024", valuePattern.Span, $"Type '{subject.Type}' requires variant patterns.", isOption ? "Use Some(value) or None." : "Use Ok(value) or Err(error).");
+                    }
+
+                    var value = EmitExpression(valuePattern.Value, scope);
+                    if (isEnum && valuePattern.Value is not MemberAccessExpressionSyntax)
+                    {
+                        Report("VEL3024", valuePattern.Span, $"Enum match cases for '{subject.Type}' must use qualified members.", $"Use '{subject.Type}.Member'.");
+                    }
+                    else if (!isEnum && valuePattern.Value is not LiteralExpressionSyntax)
+                    {
+                        Report("VEL3024", valuePattern.Span, "Primitive match cases must be literals.", "Use a literal value or add a default block.");
+                    }
+
+                    EnsureAssignable(subject.Type, value.Type, valuePattern.Span);
+                    var key = "value|" + value.Code;
+                    if (!seen.Add(key))
+                    {
+                        Report("VEL3024", valuePattern.Span, "Duplicate match pattern.", "Keep each match pattern unique.");
+                    }
+
+                    condition = $"{subjectName} == {CoerceCode(subject.Type, value, valuePattern)}";
+                    break;
+                default:
+                    Report("VEL3024", matchCase.Pattern.Span, "Unsupported match pattern.");
+                    condition = "false";
+                    break;
+            }
+
+            _writer.WriteLine(hasCase ? $"else if ({condition})" : $"if ({condition})");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            everyCaseReturns &= EmitBlock(matchCase.Body, caseScope, returnType, isTailBlock: isTail);
+            _writer.Unindent();
+            _writer.WriteLine("}");
+            hasCase = true;
+        }
+
+        var isExhaustive = isOption && seen.Contains("variant|Some") && seen.Contains("variant|None")
+            || isResult && seen.Contains("variant|Ok") && seen.Contains("variant|Err")
+            || isEnum && enumSymbol!.Syntax.Members.All(member => seen.Contains("value|" + EscapeIdentifier(subject.Type.Name) + "." + EscapeIdentifier(member.Identifier.Text)));
+
+        var defaultReturns = false;
+        if (match.DefaultClause is not null)
+        {
+            if (isExhaustive)
+            {
+                Report("VEL3024", match.DefaultClause.Span, "The default block is unreachable because all variants are already matched.", "Remove the default block or one of the exhaustive cases.");
+            }
+
+            _writer.WriteLine(hasCase ? "else" : "if (true)");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            defaultReturns = EmitBlock(match.DefaultClause.Body, scope, returnType, isTailBlock: isTail);
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+        else if (!isExhaustive)
+        {
+            var missing = GetMissingMatchPatterns(subject.Type, enumSymbol, seen);
+            Report("VEL3024", match.Span, $"Match over '{subject.Type}' is not exhaustive; missing: {string.Join(", ", missing)}.", "Handle every variant/member or add a default block.");
+        }
+        else
+        {
+            _writer.WriteLine("else");
+            _writer.WriteLine("{");
+            _writer.Indent();
+            _writer.WriteLine("throw new InvalidOperationException(\"Unreachable exhaustive Vela match.\");");
+            _writer.Unindent();
+            _writer.WriteLine("}");
+        }
+
+        return isTail && everyCaseReturns && (defaultReturns || isExhaustive);
+    }
+
+    private string BindVariantPattern(
+        VariantMatchPatternSyntax pattern,
+        VelaType subjectType,
+        string subjectName,
+        bool isOption,
+        bool isResult,
+        Scope caseScope,
+        HashSet<string> seen)
+    {
+        var variant = pattern.Variant.Text;
+        var expectedBinding = variant is "Some" or "Ok" or "Err";
+        var valid = isOption && variant is "Some" or "None"
+            || isResult && variant is "Ok" or "Err";
+        if (!valid)
+        {
+            Report("VEL3024", pattern.Variant.Span, $"Variant '{variant}' is not valid for '{subjectType}'.", isOption ? "Use Some(value) or None." : isResult ? "Use Ok(value) or Err(error)." : "Use a literal or qualified enum member pattern.");
+        }
+
+        if (expectedBinding && pattern.Binding is null)
+        {
+            Report("VEL3024", pattern.Span, $"Variant '{variant}' requires exactly one binding.", $"Use '{variant}(value)'.");
+        }
+        else if (!expectedBinding && pattern.Binding is not null)
+        {
+            Report("VEL3024", pattern.Binding.Span, $"Variant '{variant}' does not carry a value.", $"Use '{variant}' without parentheses.");
+        }
+
+        if (!seen.Add("variant|" + variant))
+        {
+            Report("VEL3024", pattern.Span, $"Duplicate match pattern '{variant}'.", "Keep each variant pattern unique.");
+        }
+
+        if (pattern.Binding is not null && pattern.Binding.Text != "_" && valid && expectedBinding)
+        {
+            var bindingType = variant switch
+            {
+                "Some" or "Ok" => subjectType.TypeArguments[0],
+                "Err" => subjectType.TypeArguments[1],
+                _ => VelaType.Unknown
+            };
+            var bindingCode = variant == "Err" ? $"{subjectName}.Error" : $"{subjectName}.Value";
+            AddVariable(caseScope, pattern.Binding.Text, new VariableSymbol(bindingType, false, bindingCode), pattern.Binding.Span);
+        }
+
+        return variant switch
+        {
+            "Some" => $"{subjectName}.HasValue",
+            "None" => $"{subjectName}.IsNone",
+            "Ok" => $"{subjectName}.IsSuccess",
+            "Err" => $"{subjectName}.IsFailure",
+            _ => "false"
+        };
+    }
+
+    private static string[] GetMissingMatchPatterns(VelaType type, EnumSymbol? enumSymbol, HashSet<string> seen)
+    {
+        if (type.Name == "Option")
+        {
+            return OptionMatchVariants.Where(name => !seen.Contains("variant|" + name)).ToArray();
+        }
+
+        if (type.Name == "Result")
+        {
+            return ResultMatchVariants.Where(name => !seen.Contains("variant|" + name)).ToArray();
+        }
+
+        if (enumSymbol is not null)
+        {
+            return enumSymbol.Syntax.Members
+                .Select(static member => member.Identifier.Text)
+                .Where(name => !seen.Contains("value|" + EscapeIdentifier(type.Name) + "." + EscapeIdentifier(name)))
+                .ToArray();
+        }
+
+        return ["default"];
+    }
+
     private ExpressionResult EmitExpression(ExpressionSyntax expression, Scope scope)
     {
         return expression switch
@@ -1159,6 +1565,7 @@ internal sealed class CSharpEmitter
             BinaryExpressionSyntax binary => EmitBinary(binary, scope),
             AssignmentExpressionSyntax assignment => EmitAssignment(assignment, scope),
             ParenthesizedExpressionSyntax parenthesized => EmitParenthesized(parenthesized, scope),
+            TupleExpressionSyntax tuple => EmitTuple(tuple, scope),
             CallExpressionSyntax call => EmitCall(call, scope),
             ListExpressionSyntax list => EmitList(list, scope),
             _ => UnsupportedExpression(expression)
@@ -1218,7 +1625,7 @@ internal sealed class CSharpEmitter
 
         if (scope.TryLookup(name.Identifier.Text, out var variable))
         {
-            return new ExpressionResult(variable.Type, EscapeIdentifier(name.Identifier.Text));
+            return new ExpressionResult(variable.Type, variable.Code ?? EscapeIdentifier(name.Identifier.Text));
         }
 
         if (_functions.ContainsKey(name.Identifier.Text) || _records.ContainsKey(name.Identifier.Text) || _objects.ContainsKey(name.Identifier.Text) || _enums.ContainsKey(name.Identifier.Text))
@@ -1234,8 +1641,11 @@ internal sealed class CSharpEmitter
     {
         if (member.Receiver is NameExpressionSyntax enumName && _enums.TryGetValue(enumName.Identifier.Text, out var enumSymbol))
         {
-            if (enumSymbol.Syntax.Members.Any(candidate => candidate.Identifier.Text == member.Member.Text))
+            var enumMember = enumSymbol.Syntax.Members.FirstOrDefault(candidate => candidate.Identifier.Text == member.Member.Text);
+            if (enumMember is not null)
             {
+                ReportAttributeUse(enumSymbol.Syntax.Attributes ?? [], enumName.Identifier.Span, $"enum '{enumSymbol.Syntax.Identifier.Text}'");
+                ReportAttributeUse(enumMember.Attributes ?? [], member.Member.Span, $"enum member '{enumSymbol.Syntax.Identifier.Text}.{member.Member.Text}'");
                 return new ExpressionResult(new VelaType(enumSymbol.Syntax.Identifier.Text), $"{EscapeIdentifier(enumName.Identifier.Text)}.{EscapeIdentifier(member.Member.Text)}");
             }
 
@@ -1255,11 +1665,25 @@ internal sealed class CSharpEmitter
             };
         }
 
+        if (receiver.Type.IsSameAs(VelaType.ProcessResult))
+        {
+            return member.Member.Text switch
+            {
+                "exit_code" => new ExpressionResult(VelaType.Int, $"{receiver.Code}.ExitCode"),
+                "stdout" => new ExpressionResult(VelaType.Text, $"{receiver.Code}.StandardOutput"),
+                "stderr" => new ExpressionResult(VelaType.Text, $"{receiver.Code}.StandardError"),
+                "timed_out" => new ExpressionResult(VelaType.Bool, $"{receiver.Code}.TimedOut"),
+                "truncated" => new ExpressionResult(VelaType.Bool, $"{receiver.Code}.Truncated"),
+                _ => ReportUnsupportedMember(member, receiver)
+            };
+        }
+
         if (_records.TryGetValue(receiver.Type.Name, out var record))
         {
             var field = record.Syntax.Members.OfType<RecordFieldSyntax>().FirstOrDefault(candidate => candidate.Identifier.Text == member.Member.Text);
             if (field is not null)
             {
+                ReportAttributeUse(field.Attributes ?? [], member.Member.Span, $"field '{record.Syntax.Identifier.Text}.{member.Member.Text}'");
                 var substitutions = CreateGenericSubstitutions(record.GenericNames, receiver.Type.TypeArguments.ToArray());
                 var fieldType = ResolveType(field.Type, record.GenericNames, field.Type.Span).Substitute(substitutions);
                 return new ExpressionResult(fieldType, $"{receiver.Code}.{EscapeIdentifier(member.Member.Text)}");
@@ -1271,6 +1695,7 @@ internal sealed class CSharpEmitter
             var field = objectSymbol.Syntax.Members.OfType<ObjectFieldSyntax>().FirstOrDefault(candidate => candidate.Identifier.Text == member.Member.Text);
             if (field is not null)
             {
+                ReportAttributeUse(field.Attributes ?? [], member.Member.Span, $"field '{objectSymbol.Syntax.Identifier.Text}.{member.Member.Text}'");
                 var substitutions = CreateGenericSubstitutions(objectSymbol.GenericNames, receiver.Type.TypeArguments.ToArray());
                 var fieldType = ResolveType(field.Type, objectSymbol.GenericNames, field.Type.Span).Substitute(substitutions);
                 return new ExpressionResult(fieldType, $"{receiver.Code}.{EscapeIdentifier(member.Member.Text)}");
@@ -1310,6 +1735,12 @@ internal sealed class CSharpEmitter
     {
         Report("VEL3009", member.Member.Span, $"Option does not contain member '{member.Member.Text}'.", "Use 'has_value' to test the option or 'value' to read the contained value.");
         return new ExpressionResult(VelaType.Unknown, $"{receiver.Code}.{EscapeIdentifier(member.Member.Text)}");
+    }
+
+    private ExpressionResult ReportUnsupportedMember(MemberAccessExpressionSyntax member, ExpressionResult receiver)
+    {
+        Report("VEL3009", member.Member.Span, $"Type '{receiver.Type}' does not contain member '{member.Member.Text}'.", "Use one of the documented fields for this value.");
+        return new ExpressionResult(VelaType.Unknown, "default");
     }
 
     private ExpressionResult ReportUnknownRuntimeExceptionMember(MemberAccessExpressionSyntax member, ExpressionResult receiver)
@@ -1530,6 +1961,17 @@ internal sealed class CSharpEmitter
         return new ExpressionResult(inner.Type, $"({inner.Code})");
     }
 
+    private ExpressionResult EmitTuple(TupleExpressionSyntax tuple, Scope scope)
+    {
+        var elements = tuple.Elements.Select(element => EmitExpression(element, scope)).ToArray();
+        if (elements.Length is < 2 or > 8)
+        {
+            Report("VEL3025", tuple.Span, "Tuple expressions require between two and eight elements.", "Use a record for larger structured values.");
+        }
+
+        return new ExpressionResult(new VelaType("Tuple", elements.Select(static element => element.Type).ToArray()), $"({string.Join(", ", elements.Select(static element => element.Code))})");
+    }
+
     private ExpressionResult EmitCall(CallExpressionSyntax call, Scope scope)
     {
         if (call.Callee is MemberAccessExpressionSyntax member)
@@ -1543,7 +1985,7 @@ internal sealed class CSharpEmitter
             return new ExpressionResult(VelaType.Unknown, "default");
         }
 
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         var explicitTypes = call.TypeArguments.Select(type => ResolveType(type, EmptyGenericNames, type.Span)).ToArray();
         if (name.Identifier.Text == "print")
         {
@@ -1564,6 +2006,11 @@ internal sealed class CSharpEmitter
         if (name.Identifier.Text is "unbox" or "try_unbox")
         {
             return EmitUnbox(call, arguments, explicitTypes, name.Identifier.Text == "try_unbox");
+        }
+
+        if (name.Identifier.Text is "some" or "none" or "ok" or "err")
+        {
+            return EmitAlgebraicConstruction(call, name.Identifier.Text, arguments, explicitTypes);
         }
 
         if (IsCollectionConstructor(name.Identifier.Text))
@@ -1643,6 +2090,57 @@ internal sealed class CSharpEmitter
         return new ExpressionResult(optional ? new VelaType("Option", [targetType]) : targetType, code);
     }
 
+    private ExpressionResult EmitAlgebraicConstruction(
+        CallExpressionSyntax call,
+        string factory,
+        ExpressionResult[] arguments,
+        VelaType[] explicitTypes)
+    {
+        if (call.Arguments.Any(static argument => argument.IsNamed))
+        {
+            Report("VEL3023", call.Span, $"Factory '{factory}' accepts positional arguments only.", "Remove the argument name and keep the explicit generic type arguments.");
+        }
+
+        var isOption = factory is "some" or "none";
+        var expectedTypeCount = isOption ? 1 : 2;
+        var expectedArgumentCount = factory == "none" ? 0 : 1;
+        if (explicitTypes.Length != expectedTypeCount)
+        {
+            Report("VEL3006", call.Span, $"Factory '{factory}' expects exactly {expectedTypeCount} type argument(s).", isOption ? $"Use '{factory}<ValueType>(...)'." : $"Use '{factory}<ValueType, ErrorType>(...)'.");
+        }
+
+        if (arguments.Length != expectedArgumentCount)
+        {
+            Report("VEL3006", call.Span, $"Factory '{factory}' expects exactly {expectedArgumentCount} value argument(s).");
+        }
+
+        var valueType = explicitTypes.Length > 0 ? explicitTypes[0] : VelaType.Unknown;
+        var errorType = explicitTypes.Length > 1 ? explicitTypes[1] : VelaType.Unknown;
+        if (arguments.Length > 0)
+        {
+            var expectedValueType = factory == "err" ? errorType : valueType;
+            EnsureAssignable(expectedValueType, arguments[0].Type, call.Arguments[0].Span);
+        }
+
+        if (isOption)
+        {
+            var optionType = new VelaType("Option", [valueType]);
+            return factory == "none"
+                ? new ExpressionResult(optionType, $"Option.None<{CSharpType(valueType)}>()")
+                : new ExpressionResult(optionType, $"Option.Some<{CSharpType(valueType)}>({(arguments.Length == 0 ? DefaultValue(valueType) : CoerceCode(valueType, arguments[0], call.Arguments[0].Expression))})");
+        }
+
+        var resultType = new VelaType("Result", [valueType, errorType]);
+        if (factory == "err")
+        {
+            var errorCode = arguments.Length == 0 ? DefaultValue(errorType) : CoerceCode(errorType, arguments[0], call.Arguments[0].Expression);
+            return new ExpressionResult(resultType, $"Result.Fail<{CSharpType(valueType)}, {CSharpType(errorType)}>({errorCode})");
+        }
+
+        var valueCode = arguments.Length == 0 ? DefaultValue(valueType) : CoerceCode(valueType, arguments[0], call.Arguments[0].Expression);
+        return new ExpressionResult(resultType, $"Result.Ok<{CSharpType(valueType)}, {CSharpType(errorType)}>({valueCode})");
+    }
+
     private ExpressionResult EmitMemberMethodCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, Scope scope)
     {
         if (member.Receiver is NameExpressionSyntax { Identifier.Text: var coreAlias } && _coreModuleAliases.TryGetValue(coreAlias, out var coreModule))
@@ -1671,7 +2169,7 @@ internal sealed class CSharpEmitter
 
     private ExpressionResult EmitSourcePackageFunctionCall(CallExpressionSyntax call, MemberAccessExpressionSyntax member, string packageName, Scope scope)
     {
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         var module = packageName[(packageName.LastIndexOf('.') + 1)..].Replace("-", "_", StringComparison.Ordinal);
         var functionName = module + "_" + member.Member.Text;
         if (_functions.TryGetValue(functionName, out var function))
@@ -1690,7 +2188,7 @@ internal sealed class CSharpEmitter
             Report("VEL3006", call.Span, $"Core module function '{member.Member.Text}' does not accept type arguments.");
         }
 
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         return module switch
         {
             "vela.core.json" => EmitJsonCall(call, member.Member, arguments),
@@ -1703,6 +2201,8 @@ internal sealed class CSharpEmitter
             "vela.core.io" => EmitIoCall(call, member.Member, arguments),
             "vela.core.encoding" => EmitEncodingCall(call, member.Member, arguments),
             "vela.core.env" => EmitEnvironmentCall(call, member.Member, arguments),
+            "vela.core.system" => EmitSystemCall(call, member.Member, arguments),
+            "vela.core.console" => EmitConsoleCall(call, member.Member, arguments),
             "vela.concurrent" => EmitConcurrentCall(call, member.Member, arguments),
             _ => ReportUnknownCoreOperation(member.Member, module)
         };
@@ -1711,6 +2211,7 @@ internal sealed class CSharpEmitter
     private ExpressionResult EmitJsonCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
     {
         "is_valid" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text], values => $"VelaJson.IsValid({values[0]})"),
+        "quote" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaJson.Quote({values[0]})"),
         "compact" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaJson.Compact({values[0]}, {SourceLocationCode(call)})"),
         "pretty" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaJson.Pretty({values[0]}, {SourceLocationCode(call)})"),
         "try_get_text" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Text, VelaType.Text], values => $"VelaJson.TryGetText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
@@ -1749,6 +2250,15 @@ internal sealed class CSharpEmitter
         "trim" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.Trim({values[0]})"),
         "to_upper_invariant" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.ToUpperInvariant({values[0]})"),
         "to_lower_invariant" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaTextOperations.ToLowerInvariant({values[0]})"),
+        "from_int" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Int], values => $"VelaTextOperations.FromInt({values[0]})"),
+        "from_long" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Long], values => $"VelaTextOperations.FromLong({values[0]})"),
+        "from_double" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Double], values => $"VelaTextOperations.FromDouble({values[0]})"),
+        "from_bool" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Bool], values => $"VelaTextOperations.FromBool({values[0]})"),
+        "try_parse_int" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Int]), [VelaType.Text], values => $"VelaTextOperations.TryParseInt({values[0]})"),
+        "try_parse_long" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Long]), [VelaType.Text], values => $"VelaTextOperations.TryParseLong({values[0]})"),
+        "try_parse_double" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Double]), [VelaType.Text], values => $"VelaTextOperations.TryParseDouble({values[0]})"),
+        "try_parse_bool" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Bool]), [VelaType.Text], values => $"VelaTextOperations.TryParseBool({values[0]})"),
+        "from_code_point" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Int], values => $"VelaTextOperations.FromCodePoint({values[0]}, {SourceLocationCode(call)})"),
         "slice" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaTextOperations.Slice({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.text")
     };
@@ -1833,10 +2343,53 @@ internal sealed class CSharpEmitter
     private ExpressionResult EmitIoCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
     {
         "exists" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text], values => $"VelaIo.Exists({values[0]})"),
+        "directory_exists" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.Text], values => $"VelaIo.DirectoryExists({values[0]})"),
         "read_text" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaIo.ReadText({values[0]}, {SourceLocationCode(call)})"),
         "write_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text], values => $"VelaIo.WriteText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
         "append_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text], values => $"VelaIo.AppendText({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "read_lines" => EmitCoreFunction(call, operation, arguments, new VelaType("Array", [VelaType.Text]), [VelaType.Text], values => $"VelaIo.ReadLines({values[0]}, {SourceLocationCode(call)})"),
+        "write_lines" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, new VelaType("List", [VelaType.Text])], values => $"VelaIo.WriteLines({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "delete_file" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaIo.DeleteFile({values[0]}, {SourceLocationCode(call)})"),
+        "copy_file" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text, VelaType.Bool], values => $"VelaIo.CopyFile({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
+        "move_file" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text, VelaType.Bool], values => $"VelaIo.MoveFile({values[0]}, {values[1]}, {values[2]}, {SourceLocationCode(call)})"),
+        "file_size" => EmitCoreFunction(call, operation, arguments, VelaType.Long, [VelaType.Text], values => $"VelaIo.FileSize({values[0]}, {SourceLocationCode(call)})"),
+        "create_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaIo.CreateDirectory({values[0]}, {SourceLocationCode(call)})"),
+        "delete_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Bool], values => $"VelaIo.DeleteDirectory({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "list_files" => EmitCoreFunction(call, operation, arguments, new VelaType("Array", [VelaType.Text]), [VelaType.Text], values => $"VelaIo.ListFiles({values[0]}, {SourceLocationCode(call)})"),
+        "list_directories" => EmitCoreFunction(call, operation, arguments, new VelaType("Array", [VelaType.Text]), [VelaType.Text], values => $"VelaIo.ListDirectories({values[0]}, {SourceLocationCode(call)})"),
+        "combine" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Text], values => $"VelaIo.Combine({values[0]}, {values[1]}, {SourceLocationCode(call)})"),
+        "file_name" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaIo.FileName({values[0]}, {SourceLocationCode(call)})"),
+        "extension" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaIo.Extension({values[0]}, {SourceLocationCode(call)})"),
+        "full_path" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text], values => $"VelaIo.FullPath({values[0]}, {SourceLocationCode(call)})"),
+        "temporary_file" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [], _ => $"VelaIo.TemporaryFile({SourceLocationCode(call)})"),
+        "temporary_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [], _ => $"VelaIo.TemporaryDirectory({SourceLocationCode(call)})"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.io")
+    };
+
+    private ExpressionResult EmitSystemCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "exec" => EmitSystemExec(call, operation, arguments),
+        "which" => EmitCoreFunction(call, operation, arguments, new VelaType("Option", [VelaType.Text]), [VelaType.Text], values => $"VelaSystem.Which({values[0]})"),
+        "process_id" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [], _ => "VelaSystem.ProcessId()"),
+        "temporary_directory" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [], _ => "VelaSystem.TemporaryDirectory()"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.system")
+    };
+
+    private ExpressionResult EmitSystemExec(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments)
+    {
+        var values = BindNamedCoreArguments(call, operation, arguments, SystemExecParameters);
+        return new ExpressionResult(VelaType.ProcessResult, $"VelaSystem.Exec({values[0]}, {values[1]}, {values[2]}, {values[3]}, {SourceLocationCode(call)})");
+    }
+
+    private ExpressionResult EmitConsoleCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "write" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaConsole.Write({values[0]})"),
+        "write_line" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaConsole.WriteLine({values[0]})"),
+        "write_error" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaConsole.WriteError({values[0]})"),
+        "write_error_line" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text], values => $"VelaConsole.WriteErrorLine({values[0]})"),
+        "is_output_redirected" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [], _ => "VelaConsole.IsOutputRedirected()"),
+        "supports_color" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [], _ => "VelaConsole.SupportsColor()"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.console")
     };
 
     private ExpressionResult EmitEncodingCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
@@ -1875,6 +2428,11 @@ internal sealed class CSharpEmitter
         IReadOnlyList<VelaType> parameterTypes,
         Func<string[], string> emit)
     {
+        foreach (var argument in call.Arguments.Where(static argument => argument.IsNamed))
+        {
+            Report("VEL3023", argument.Name!.Span, $"Core function '{operation.Text}' does not expose named arguments.", "Pass these intrinsic arguments positionally; system.exec supports named limits.");
+        }
+
         if (arguments.Length != parameterTypes.Count)
         {
             Report("VEL3006", call.Span, $"Core function '{operation.Text}' expects {parameterTypes.Count} argument(s), but received {arguments.Length}.");
@@ -1889,6 +2447,69 @@ internal sealed class CSharpEmitter
         }
 
         return new ExpressionResult(returnType, emit(values));
+    }
+
+    private string[] BindNamedCoreArguments(
+        CallExpressionSyntax call,
+        SyntaxToken operation,
+        ExpressionResult[] suppliedValues,
+        IReadOnlyList<CoreParameter> parameters)
+    {
+        var values = new ExpressionResult?[parameters.Count];
+        var sources = new SyntaxNode?[parameters.Count];
+        var nextPositional = 0;
+        for (var sourceIndex = 0; sourceIndex < call.Arguments.Count; sourceIndex++)
+        {
+            var argument = call.Arguments[sourceIndex];
+            var parameterIndex = argument.Name is null
+                ? nextPositional++
+                : parameters.Select(static (parameter, index) => (parameter, index))
+                    .Where(pair => string.Equals(pair.parameter.Name, argument.Name.Text, StringComparison.Ordinal))
+                    .Select(static pair => pair.index)
+                    .DefaultIfEmpty(-1)
+                    .First();
+            if (parameterIndex < 0 || parameterIndex >= parameters.Count)
+            {
+                Report("VEL3023", argument.Span, argument.Name is null
+                    ? $"Core function '{operation.Text}' received too many arguments."
+                    : $"Core function '{operation.Text}' has no parameter named '{argument.Name.Text}'.");
+                continue;
+            }
+
+            if (values[parameterIndex] is not null)
+            {
+                Report("VEL3023", argument.Span, $"Core parameter '{parameters[parameterIndex].Name}' is supplied more than once.", "Pass each parameter only once.");
+                continue;
+            }
+
+            values[parameterIndex] = sourceIndex < suppliedValues.Length ? suppliedValues[sourceIndex] : new ExpressionResult(VelaType.Unknown, "default");
+            sources[parameterIndex] = argument.Expression;
+        }
+
+        var codes = new string[parameters.Count];
+        for (var index = 0; index < parameters.Count; index++)
+        {
+            var parameter = parameters[index];
+            if (values[index] is null)
+            {
+                if (parameter.DefaultCode is null)
+                {
+                    Report("VEL3023", call.Span, $"Required parameter '{parameter.Name}' is missing for core function '{operation.Text}'.", "Supply every required process argument.");
+                    values[index] = new ExpressionResult(parameter.Type, DefaultValue(parameter.Type));
+                }
+                else
+                {
+                    values[index] = new ExpressionResult(parameter.Type, parameter.DefaultCode);
+                }
+
+                sources[index] = call;
+            }
+
+            EnsureAssignable(parameter.Type, values[index]!.Type, sources[index]!.Span);
+            codes[index] = CoerceCode(parameter.Type, values[index]!, sources[index]!);
+        }
+
+        return codes;
     }
 
     private ExpressionResult ReportUnknownCoreOperation(SyntaxToken operation, string module)
@@ -1919,7 +2540,7 @@ internal sealed class CSharpEmitter
             return new ExpressionResult(VelaType.Unknown, "default");
         }
 
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         if (arguments.Length != parameterTypes.Length)
         {
             Report("VEL3006", call.Span, $"Package function '{member.Member.Text}' expects {parameterTypes.Length} argument(s), but received {arguments.Length}.");
@@ -1946,7 +2567,7 @@ internal sealed class CSharpEmitter
         }
 
         var receiver = knownReceiver ?? EmitExpression(member.Receiver, scope);
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         return receiver.Type.Name switch
         {
             "List" when receiver.Type.TypeArguments.Count == 1 => EmitVectorMethod(call, receiver, member.Member, arguments),
@@ -1971,27 +2592,43 @@ internal sealed class CSharpEmitter
         var method = objectSymbol.Syntax.Members.OfType<ObjectMethodSyntax>()
             .Select(static candidate => candidate.Function)
             .FirstOrDefault(candidate => candidate.Identifier.Text == member.Text);
-        var arguments = call.Arguments.Select(argument => EmitExpression(argument, scope)).ToArray();
+        var arguments = call.Arguments.Select(argument => EmitExpression(argument.Expression, scope)).ToArray();
         if (method is null)
         {
             Report("VEL3009", member.Span, $"Type '{receiver.Type}' does not contain method '{member.Text}'.");
             return new ExpressionResult(VelaType.Unknown, "default");
         }
 
-        if (arguments.Length != method.Parameters.Count)
+        ReportAttributeUse(method.Attributes ?? [], member.Span, $"method '{objectSymbol.Syntax.Identifier.Text}.{member.Text}'");
+
+        var bound = BindCallArguments(call, method.Parameters, arguments, objectSymbol.GenericNames, $"method '{member.Text}'");
+        arguments = bound.Values;
+        var substitutions = CreateGenericSubstitutions(objectSymbol.GenericNames, receiver.Type.TypeArguments.ToArray());
+
+        for (var index = 0; index < arguments.Length; index++)
         {
-            Report("VEL3006", call.Span, $"Method '{member.Text}' expects {method.Parameters.Count} argument(s), but received {arguments.Length}.");
+            var expected = ResolveType(method.Parameters[index].Type, objectSymbol.GenericNames, method.Parameters[index].Type.Span).Substitute(substitutions);
+            EnsureAssignable(expected, arguments[index].Type, bound.Sources[index].Span);
         }
 
-        for (var index = 0; index < Math.Min(arguments.Length, method.Parameters.Count); index++)
-        {
-            var expected = ResolveType(method.Parameters[index].Type, objectSymbol.GenericNames, method.Parameters[index].Type.Span);
-            EnsureAssignable(expected, arguments[index].Type, call.Arguments[index].Span);
-        }
-
-        var returnType = ResolveType(method.ReturnType, objectSymbol.GenericNames, method.Identifier.Span, VelaType.Unit);
+        var returnType = ResolveType(method.ReturnType, objectSymbol.GenericNames, method.Identifier.Span, VelaType.Unit, allowVoid: true).Substitute(substitutions);
         var callableReturnType = method.AsyncKeyword is null ? returnType : new VelaType("Future", [returnType]);
-        return new ExpressionResult(callableReturnType, $"{receiver.Code}.{EscapeIdentifier(member.Text)}({string.Join(", ", arguments.Select(static argument => argument.Code))})");
+        CallEvaluationStep? receiverStep = null;
+        var receiverCode = receiver.Code;
+        if (bound.EvaluationSteps.Length > 0)
+        {
+            receiverCode = NextCallArgumentTemporary();
+            receiverStep = new CallEvaluationStep(receiverCode, receiver.Code);
+        }
+
+        var argumentCodes = bound.EmissionOrder.Select(index =>
+        {
+            var expected = ResolveType(method.Parameters[index].Type, objectSymbol.GenericNames, method.Parameters[index].Type.Span).Substitute(substitutions);
+            var code = CoerceCode(expected, arguments[index], bound.Sources[index]);
+            return bound.UseNamedEmission ? $"{EscapeIdentifier(method.Parameters[index].Identifier.Text)}: {code}" : code;
+        });
+        var code = $"{receiverCode}.{EscapeIdentifier(member.Text)}({string.Join(", ", argumentCodes)})";
+        return WrapBoundCall(callableReturnType, code, bound, receiverStep);
     }
 
     private ExpressionResult EmitVectorMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
@@ -2217,7 +2854,7 @@ internal sealed class CSharpEmitter
         if (arguments.Length > 0)
         {
             EnsureAssignable(VelaType.WholeNumber, arguments[0].Type, call.Arguments[0].Span);
-            if (TryGetIntegerConstant(call.Arguments[0], out var capacity))
+            if (TryGetIntegerConstant(call.Arguments[0].Expression, out var capacity))
             {
                 if (capacity < 0)
                 {
@@ -2253,12 +2890,136 @@ internal sealed class CSharpEmitter
         return false;
     }
 
+    private BoundCallArguments BindCallArguments(
+        CallExpressionSyntax call,
+        IReadOnlyList<ParameterSyntax> parameters,
+        ExpressionResult[] suppliedValues,
+        IReadOnlyCollection<string> genericNames,
+        string callableDisplay)
+    {
+        var values = new ExpressionResult?[parameters.Count];
+        var sources = new SyntaxNode?[parameters.Count];
+        var emissionOrder = new List<int>(parameters.Count);
+        var evaluationSteps = new List<CallEvaluationStep>(parameters.Count);
+        var nextPositional = 0;
+        var useNamedEmission = call.Arguments.Any(static argument => argument.IsNamed);
+
+        for (var sourceIndex = 0; sourceIndex < call.Arguments.Count; sourceIndex++)
+        {
+            var argument = call.Arguments[sourceIndex];
+            var value = sourceIndex < suppliedValues.Length
+                ? suppliedValues[sourceIndex]
+                : new ExpressionResult(VelaType.Unknown, "default");
+            int parameterIndex;
+            if (argument.Name is null)
+            {
+                parameterIndex = nextPositional++;
+                if (parameterIndex >= parameters.Count)
+                {
+                    Report("VEL3023", argument.Span, $"{callableDisplay} received too many positional arguments.", $"Pass at most {parameters.Count} argument(s).");
+                    continue;
+                }
+            }
+            else
+            {
+                parameterIndex = -1;
+                for (var index = 0; index < parameters.Count; index++)
+                {
+                    if (string.Equals(parameters[index].Identifier.Text, argument.Name.Text, StringComparison.Ordinal))
+                    {
+                        parameterIndex = index;
+                        break;
+                    }
+                }
+
+                if (parameterIndex < 0)
+                {
+                    Report("VEL3023", argument.Name.Span, $"{callableDisplay} has no parameter named '{argument.Name.Text}'.", "Use one of the declared parameter names.");
+                    continue;
+                }
+            }
+
+            if (values[parameterIndex] is not null)
+            {
+                Report("VEL3023", argument.Span, $"Parameter '{parameters[parameterIndex].Identifier.Text}' is supplied more than once to {callableDisplay}.", "Pass each parameter once, either positionally or by name.");
+                continue;
+            }
+
+            values[parameterIndex] = value;
+            sources[parameterIndex] = argument.Expression;
+            emissionOrder.Add(parameterIndex);
+        }
+
+        var requiresEvaluationWrapper = parameters
+            .Select((parameter, index) => (parameter, index))
+            .Any(item => values[item.index] is null && item.parameter.DefaultValue is not null);
+        if (requiresEvaluationWrapper)
+        {
+            foreach (var parameterIndex in emissionOrder)
+            {
+                var value = values[parameterIndex]!;
+                var temporary = NextCallArgumentTemporary();
+                evaluationSteps.Add(new CallEvaluationStep(temporary, value.Code));
+                values[parameterIndex] = new ExpressionResult(value.Type, temporary);
+            }
+        }
+
+        for (var index = 0; index < parameters.Count; index++)
+        {
+            if (values[index] is not null)
+            {
+                continue;
+            }
+
+            var parameter = parameters[index];
+            useNamedEmission = true;
+            if (parameter.DefaultValue is null)
+            {
+                var parameterType = ResolveType(parameter.Type, genericNames, parameter.Type.Span);
+                Report("VEL3023", call.Span, $"Required parameter '{parameter.Identifier.Text}' is missing for {callableDisplay}.", $"Supply '{parameter.Identifier.Text}' with a value of type {parameterType}.");
+                values[index] = new ExpressionResult(parameterType, DefaultValue(parameterType));
+                sources[index] = call;
+                emissionOrder.Add(index);
+                continue;
+            }
+
+            var defaultScope = new Scope(null);
+            for (var previous = 0; previous < index; previous++)
+            {
+                if (values[previous] is null)
+                {
+                    continue;
+                }
+
+                var previousType = ResolveType(parameters[previous].Type, genericNames, parameters[previous].Type.Span);
+                AddVariable(defaultScope, parameters[previous].Identifier.Text, new VariableSymbol(previousType, false, values[previous]!.Code), parameters[previous].Identifier.Span);
+            }
+
+            values[index] = EmitExpression(parameter.DefaultValue, defaultScope);
+            if (requiresEvaluationWrapper)
+            {
+                var value = values[index]!;
+                var temporary = NextCallArgumentTemporary();
+                evaluationSteps.Add(new CallEvaluationStep(temporary, value.Code));
+                values[index] = new ExpressionResult(value.Type, temporary);
+            }
+            sources[index] = parameter.DefaultValue;
+            emissionOrder.Add(index);
+        }
+
+        return new BoundCallArguments(
+            values.Select(static value => value!).ToArray(),
+            sources.Select(static source => source!).ToArray(),
+            emissionOrder.ToArray(),
+            useNamedEmission,
+            evaluationSteps.ToArray());
+    }
+
     private ExpressionResult EmitFunctionCall(CallExpressionSyntax call, FunctionSymbol function, ExpressionResult[] arguments, VelaType[] explicitTypes)
     {
-        if (arguments.Length != function.Syntax.Parameters.Count)
-        {
-            Report("VEL3006", call.Span, $"Function '{function.Syntax.Identifier.Text}' expects {function.Syntax.Parameters.Count} argument(s), but received {arguments.Length}.");
-        }
+        ReportAttributeUse(function.Syntax.Attributes ?? [], call.Callee.Span, $"function '{function.Syntax.Identifier.Text}'");
+        var bound = BindCallArguments(call, function.Syntax.Parameters, arguments, function.GenericNames, $"function '{function.Syntax.Identifier.Text}'");
+        arguments = bound.Values;
 
         var substitutions = CreateGenericSubstitutions(function.GenericNames, explicitTypes);
         if (explicitTypes.Length > 0 && explicitTypes.Length != function.GenericNames.Length)
@@ -2284,36 +3045,33 @@ internal sealed class CSharpEmitter
         for (var index = 0; index < Math.Min(arguments.Length, function.Syntax.Parameters.Count); index++)
         {
             var expected = ResolveType(function.Syntax.Parameters[index].Type, function.GenericNames, function.Syntax.Parameters[index].Type.Span).Substitute(substitutions);
-            EnsureAssignable(expected, arguments[index].Type, call.Arguments[index].Span);
+            EnsureAssignable(expected, arguments[index].Type, bound.Sources[index].Span);
         }
 
-        var returnType = ResolveType(function.Syntax.ReturnType, function.GenericNames, function.Syntax.Identifier.Span, defaultType: VelaType.Unit).Substitute(substitutions);
+        var returnType = ResolveType(function.Syntax.ReturnType, function.GenericNames, function.Syntax.Identifier.Span, defaultType: VelaType.Unit, allowVoid: true).Substitute(substitutions);
         var callableReturnType = function.Syntax.AsyncKeyword is null ? returnType : new VelaType("Future", [returnType]);
         var typeArguments = explicitTypes.Length > 0
             ? $"<{string.Join(", ", explicitTypes.Select(CSharpType))}>"
             : string.Empty;
-        var argumentCodes = arguments.Select((argument, index) =>
+        var argumentCodes = bound.EmissionOrder.Select(index =>
         {
-            if (index >= function.Syntax.Parameters.Count)
-            {
-                return argument.Code;
-            }
-
+            var argument = arguments[index];
             var expected = ResolveType(function.Syntax.Parameters[index].Type, function.GenericNames, function.Syntax.Parameters[index].Type.Span).Substitute(substitutions);
-            return CoerceCode(expected, argument, call.Arguments[index]);
+            var code = CoerceCode(expected, argument, bound.Sources[index]);
+            return bound.UseNamedEmission ? $"{EscapeIdentifier(function.Syntax.Parameters[index].Identifier.Text)}: {code}" : code;
         });
         var qualifier = _currentObject is null ? string.Empty : "Program.";
         var code = $"{qualifier}{EscapeIdentifier(function.Syntax.Identifier.Text)}{typeArguments}({string.Join(", ", argumentCodes)})";
-        return new ExpressionResult(callableReturnType, code);
+        return WrapBoundCall(callableReturnType, code, bound);
     }
 
     private ExpressionResult EmitRecordConstruction(CallExpressionSyntax call, RecordSymbol record, ExpressionResult[] arguments, VelaType[] explicitTypes)
     {
+        ReportAttributeUse(record.Syntax.Attributes ?? [], call.Callee.Span, $"record '{record.Syntax.Identifier.Text}'");
         var fields = record.Syntax.Members.OfType<RecordFieldSyntax>().ToArray();
-        if (arguments.Length != fields.Length)
-        {
-            Report("VEL3006", call.Span, $"Record '{record.Syntax.Identifier.Text}' expects {fields.Length} value(s), but received {arguments.Length}.");
-        }
+        var parameters = fields.Select(static field => new ParameterSyntax(field.Identifier, field.ColonToken, field.Type)).ToArray();
+        var bound = BindCallArguments(call, parameters, arguments, record.GenericNames, $"record '{record.Syntax.Identifier.Text}'");
+        arguments = bound.Values;
 
         var substitutions = CreateGenericSubstitutions(record.GenericNames, explicitTypes);
         for (var index = 0; index < Math.Min(arguments.Length, fields.Length); index++)
@@ -2334,37 +3092,36 @@ internal sealed class CSharpEmitter
         for (var index = 0; index < Math.Min(arguments.Length, fields.Length); index++)
         {
             var expected = ResolveType(fields[index].Type, record.GenericNames, fields[index].Type.Span).Substitute(substitutions);
-            EnsureAssignable(expected, arguments[index].Type, call.Arguments[index].Span);
+            EnsureAssignable(expected, arguments[index].Type, bound.Sources[index].Span);
         }
 
         var constructedType = new VelaType(record.Syntax.Identifier.Text, record.GenericNames.Select(name => substitutions.TryGetValue(name, out var type) ? type : VelaType.Unknown).ToArray());
         var typeArguments = constructedType.TypeArguments.Count == 0 ? string.Empty : $"<{string.Join(", ", constructedType.TypeArguments.Select(CSharpType))}>";
-        var argumentCodes = arguments.Select((argument, index) =>
+        var argumentCodes = bound.EmissionOrder.Select(index =>
         {
-            if (index >= fields.Length)
-            {
-                return argument.Code;
-            }
-
+            var argument = arguments[index];
             var expected = ResolveType(fields[index].Type, record.GenericNames, fields[index].Type.Span).Substitute(substitutions);
-            return CoerceCode(expected, argument, call.Arguments[index]);
+            var code = CoerceCode(expected, argument, bound.Sources[index]);
+            return bound.UseNamedEmission ? $"{EscapeIdentifier(fields[index].Identifier.Text)}: {code}" : code;
         });
         var code = $"new {EscapeIdentifier(record.Syntax.Identifier.Text)}{typeArguments}({string.Join(", ", argumentCodes)})";
-        return new ExpressionResult(constructedType, code);
+        return WrapBoundCall(constructedType, code, bound);
     }
 
     private ExpressionResult EmitObjectConstruction(CallExpressionSyntax call, ObjectSymbol symbol, ExpressionResult[] arguments, VelaType[] explicitTypes)
     {
+        ReportAttributeUse(symbol.Syntax.Attributes ?? [], call.Callee.Span, $"{symbol.Syntax.Kind.ToString().ToLowerInvariant()} '{symbol.Syntax.Identifier.Text}'");
         var fields = symbol.Syntax.Members.OfType<ObjectFieldSyntax>().ToArray();
-        if (arguments.Length != fields.Length)
-        {
-            Report("VEL3006", call.Span, $"{symbol.Syntax.Kind} '{symbol.Syntax.Identifier.Text}' expects {fields.Length} value(s), but received {arguments.Length}.");
-        }
+        IReadOnlyList<ParameterSyntax> parameters = symbol.Syntax.Kind == ObjectDeclarationKind.Class
+            ? symbol.Syntax.ConstructorParameters
+            : fields.Select(static field => new ParameterSyntax(field.Identifier, field.ColonToken, field.Type)).ToArray();
+        var bound = BindCallArguments(call, parameters, arguments, symbol.GenericNames, $"{symbol.Syntax.Kind.ToString().ToLowerInvariant()} '{symbol.Syntax.Identifier.Text}'");
+        arguments = bound.Values;
 
         var substitutions = CreateGenericSubstitutions(symbol.GenericNames, explicitTypes);
-        for (var index = 0; index < Math.Min(arguments.Length, fields.Length); index++)
+        for (var index = 0; index < arguments.Length; index++)
         {
-            var expected = ResolveType(fields[index].Type, symbol.GenericNames, fields[index].Type.Span);
+            var expected = ResolveType(parameters[index].Type, symbol.GenericNames, parameters[index].Type.Span);
             InferGenericArguments(expected, arguments[index].Type, symbol.GenericNames, substitutions);
         }
 
@@ -2377,27 +3134,46 @@ internal sealed class CSharpEmitter
             }
         }
 
-        for (var index = 0; index < Math.Min(arguments.Length, fields.Length); index++)
+        for (var index = 0; index < arguments.Length; index++)
         {
-            var expected = ResolveType(fields[index].Type, symbol.GenericNames, fields[index].Type.Span).Substitute(substitutions);
-            EnsureAssignable(expected, arguments[index].Type, call.Arguments[index].Span);
+            var expected = ResolveType(parameters[index].Type, symbol.GenericNames, parameters[index].Type.Span).Substitute(substitutions);
+            EnsureAssignable(expected, arguments[index].Type, bound.Sources[index].Span);
         }
 
         var typeArguments = symbol.GenericNames.Select(name => substitutions.TryGetValue(name, out var type) ? type : VelaType.Unknown).ToArray();
         var constructedType = new VelaType(symbol.Syntax.Identifier.Text, typeArguments);
         var genericSuffix = typeArguments.Length == 0 ? string.Empty : $"<{string.Join(", ", typeArguments.Select(CSharpType))}>";
-        var argumentCodes = arguments.Select((argument, index) =>
+        var argumentCodes = bound.EmissionOrder.Select(index =>
         {
-            if (index >= fields.Length)
-            {
-                return argument.Code;
-            }
-
-            var expected = ResolveType(fields[index].Type, symbol.GenericNames, fields[index].Type.Span).Substitute(substitutions);
-            return CoerceCode(expected, argument, call.Arguments[index]);
+            var argument = arguments[index];
+            var expected = ResolveType(parameters[index].Type, symbol.GenericNames, parameters[index].Type.Span).Substitute(substitutions);
+            var code = CoerceCode(expected, argument, bound.Sources[index]);
+            return bound.UseNamedEmission ? $"{EscapeIdentifier(parameters[index].Identifier.Text)}: {code}" : code;
         });
-        return new ExpressionResult(constructedType, $"new {EscapeIdentifier(symbol.Syntax.Identifier.Text)}{genericSuffix}({string.Join(", ", argumentCodes)})");
+        var code = $"new {EscapeIdentifier(symbol.Syntax.Identifier.Text)}{genericSuffix}({string.Join(", ", argumentCodes)})";
+        return WrapBoundCall(constructedType, code, bound);
     }
+
+    private static ExpressionResult WrapBoundCall(
+        VelaType resultType,
+        string callCode,
+        BoundCallArguments bound,
+        CallEvaluationStep? prefix = null)
+    {
+        if (bound.EvaluationSteps.Length == 0)
+        {
+            return new ExpressionResult(resultType, callCode);
+        }
+
+        var steps = prefix is null ? bound.EvaluationSteps : [prefix, .. bound.EvaluationSteps];
+        var declarations = string.Join(" ", steps.Select(static step => $"var {step.Name} = {step.Code};"));
+        var code = resultType.IsSameAs(VelaType.Unit)
+            ? $"((Action)(() => {{ {declarations} {callCode}; }}))()"
+            : $"((Func<{CSharpType(resultType)}>)(() => {{ {declarations} return {callCode}; }}))()";
+        return new ExpressionResult(resultType, code);
+    }
+
+    private string NextCallArgumentTemporary() => "__velaCallArg" + (_callArgumentIdentifier++).ToString(CultureInfo.InvariantCulture);
 
     private ExpressionResult EmitList(ListExpressionSyntax list, Scope scope)
     {
@@ -2424,11 +3200,22 @@ internal sealed class CSharpEmitter
         return new ExpressionResult(VelaType.Unknown, "default");
     }
 
-    private VelaType ResolveType(TypeSyntax? syntax, IReadOnlyCollection<string> genericNames, TextSpan span, VelaType? defaultType = null)
+    private VelaType ResolveType(
+        TypeSyntax? syntax,
+        IReadOnlyCollection<string> genericNames,
+        TextSpan span,
+        VelaType? defaultType = null,
+        bool allowVoid = false)
     {
         if (syntax is null)
         {
             return defaultType ?? VelaType.Unknown;
+        }
+
+        if (syntax is TupleTypeSyntax tuple)
+        {
+            var tupleElements = tuple.Elements.Select(element => ResolveType(element, genericNames, element.Span)).ToArray();
+            return new VelaType("Tuple", tupleElements);
         }
 
         if (syntax is not NamedTypeSyntax named)
@@ -2451,7 +3238,9 @@ internal sealed class CSharpEmitter
             "Any" => VelaType.Any,
             "TcpConnection" => VelaType.TcpConnection,
             "Cancellation" => VelaType.Cancellation,
-            "Unit" => VelaType.Unit,
+            "ProcessResult" => VelaType.ProcessResult,
+            "Void" or "Unit" when allowVoid => VelaType.Unit,
+            "Void" or "Unit" => ReportVoidValueType(named),
             "List" or "Vector" => new VelaType("List", arguments),
             "Array" or "Result" or "Option" or "Future" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" => new VelaType(named.Identifier.Text, arguments),
             _ when RuntimeExceptionRanks.ContainsKey(named.Identifier.Text) && arguments.Length == 0 => new VelaType(named.Identifier.Text),
@@ -2467,6 +3256,12 @@ internal sealed class CSharpEmitter
         }
 
         return type;
+    }
+
+    private VelaType ReportVoidValueType(NamedTypeSyntax named)
+    {
+        Report("VEL3020", named.Span, "Void is return-only and cannot be used as a value type.", "Use Void only after '->' on a function or method declaration.");
+        return VelaType.Unknown;
     }
 
     private VelaType ReportUnknownType(NamedTypeSyntax named)
@@ -2501,6 +3296,105 @@ internal sealed class CSharpEmitter
             Report("VEL3010", parameter.Span, $"Generic constraint on '{parameter.Identifier.Text}' is not available in this compiler version.", "Remove the constraint or enforce it through a runtime contract.");
         }
     }
+
+    private void ValidateParameterDefault(ParameterSyntax parameter, VelaType parameterType, Scope scope)
+    {
+        if (parameter.DefaultValue is null)
+        {
+            return;
+        }
+
+        var value = EmitExpression(parameter.DefaultValue, scope);
+        EnsureAssignable(parameterType, value.Type, parameter.DefaultValue.Span);
+    }
+
+    private void ValidateAttributes(IReadOnlyList<AttributeSyntax> attributes, AttributeTarget target)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var attribute in attributes)
+        {
+            if (!names.Add(attribute.Name.Text))
+            {
+                Report("VEL3026", attribute.Name.Span, $"Attribute '@{attribute.Name.Text}' cannot be applied more than once to the same declaration.", "Remove the duplicate attribute.");
+                continue;
+            }
+
+            switch (attribute.Name.Text)
+            {
+                case "deprecated":
+                    RequireAttributeStringArgument(attribute);
+                    break;
+                case "experimental":
+                    RequireAttributeArgumentCount(attribute, 0);
+                    break;
+                case "since":
+                    RequireAttributeStringArgument(attribute);
+                    if (attribute.Arguments.Count == 1
+                        && attribute.Arguments[0] is LiteralExpressionSyntax { LiteralToken.Value: string version }
+                        && !Version.TryParse(version, out _))
+                    {
+                        Report("VEL3026", attribute.Arguments[0].Span, $"Attribute '@since' requires a valid version, but '{version}' is invalid.", "Use a version such as '0.2.0'.");
+                    }
+
+                    break;
+                case "doc":
+                    RequireAttributeArgumentCount(attribute, 1);
+                    if (attribute.Arguments.Count == 1 && attribute.Arguments[0] is not NameExpressionSyntax { Identifier.Text: "hidden" })
+                    {
+                        Report("VEL3026", attribute.Arguments[0].Span, "Attribute '@doc' currently supports only the 'hidden' argument.", "Use '@doc(hidden)'.");
+                    }
+
+                    break;
+                default:
+                    Report("VEL3026", attribute.Name.Span, $"Unknown attribute '@{attribute.Name.Text}'.", "Use @deprecated, @experimental, @since, or @doc(hidden).");
+                    break;
+            }
+
+            if (attribute.Name.Text == "doc" && target == AttributeTarget.Local)
+            {
+                Report("VEL3026", attribute.Span, "Attribute '@doc' is not valid on a local declaration.");
+            }
+        }
+    }
+
+    private void ReportAttributeUse(IReadOnlyList<AttributeSyntax> attributes, TextSpan useSpan, string declaration)
+    {
+        foreach (var attribute in attributes)
+        {
+            switch (attribute.Name.Text)
+            {
+                case "deprecated":
+                    var detail = attribute.Arguments.Count == 1
+                        && attribute.Arguments[0] is LiteralExpressionSyntax { LiteralToken.Value: string message }
+                            ? " " + message
+                            : string.Empty;
+                    _diagnostics.ReportWarning("VELW002", useSpan, $"Use of deprecated {declaration}.{detail}", "Migrate to the supported replacement described by the declaration.");
+                    break;
+                case "experimental":
+                    _diagnostics.ReportWarning("VELW003", useSpan, $"Use of experimental {declaration}; its API may change.", "Pin the Vela version and review release notes before production use.");
+                    break;
+            }
+        }
+    }
+
+    private void RequireAttributeStringArgument(AttributeSyntax attribute)
+    {
+        RequireAttributeArgumentCount(attribute, 1);
+        if (attribute.Arguments.Count == 1 && attribute.Arguments[0] is not LiteralExpressionSyntax { LiteralToken.Kind: TokenKind.StringLiteral })
+        {
+            Report("VEL3026", attribute.Arguments[0].Span, $"Attribute '@{attribute.Name.Text}' requires one Text literal.", $"Use '@{attribute.Name.Text}(\"message\")'.");
+        }
+    }
+
+    private void RequireAttributeArgumentCount(AttributeSyntax attribute, int expected)
+    {
+        if (attribute.Arguments.Count != expected)
+        {
+            Report("VEL3026", attribute.Span, $"Attribute '@{attribute.Name.Text}' expects {expected} argument(s), but received {attribute.Arguments.Count}.");
+        }
+    }
+
+    private static string ConstructorCaptureName(string name) => "__velaCtor_" + EscapeIdentifier(name);
 
     private void InferGenericArguments(VelaType expected, VelaType actual, IReadOnlyCollection<string> genericNames, IDictionary<string, VelaType> substitutions)
     {
@@ -2588,6 +3482,7 @@ internal sealed class CSharpEmitter
         "Decimal" => "VelaDecimal",
         "Text" => "VelaText",
         "Unit" => "void",
+        "Tuple" when type.TypeArguments.Count is >= 2 and <= 8 => $"({string.Join(", ", type.TypeArguments.Select(CSharpType))})",
         _ => "nint"
     };
 
@@ -2796,6 +3691,7 @@ internal sealed class CSharpEmitter
         "Any" => "object",
         "TcpConnection" => "TcpConnection",
         "Cancellation" => "VelaCancellation",
+        "ProcessResult" => "VelaProcessResult",
         "Unit" => "void",
         "Option" when type.TypeArguments.Count == 1 => $"Option<{CSharpType(type.TypeArguments[0])}>",
         "Result" when type.TypeArguments.Count == 2 => $"Result<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",
@@ -2863,7 +3759,18 @@ internal sealed class CSharpEmitter
 
     private sealed record ExpressionResult(VelaType Type, string Code);
 
-    private sealed record VariableSymbol(VelaType Type, bool Mutable);
+    private sealed record BoundCallArguments(
+        ExpressionResult[] Values,
+        SyntaxNode[] Sources,
+        int[] EmissionOrder,
+        bool UseNamedEmission,
+        CallEvaluationStep[] EvaluationSteps);
+
+    private sealed record CallEvaluationStep(string Name, string Code);
+
+    private sealed record CoreParameter(string Name, VelaType Type, string? DefaultCode = null);
+
+    private sealed record VariableSymbol(VelaType Type, bool Mutable, string? Code = null);
 
     private sealed record FunctionSymbol(FunctionDeclarationSyntax Syntax)
     {
@@ -2881,6 +3788,16 @@ internal sealed class CSharpEmitter
     }
 
     private sealed record EnumSymbol(EnumDeclarationSyntax Syntax);
+
+    private enum AttributeTarget
+    {
+        Function,
+        Type,
+        Method,
+        Field,
+        EnumMember,
+        Local
+    }
 
     private sealed class Scope(Scope? parent)
     {

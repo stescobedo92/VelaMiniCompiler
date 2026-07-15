@@ -9,15 +9,16 @@ publishing. Whitespace improves readability but does not change program meaning.
 ```vela
 include vela.core;
 
-fn main() -> Int {
+fn main() -> Void {
     let message: Text = "Hello, Vela!";
     print(message);
-    return 0;
 }
 ```
 
 Every source file that uses core language services starts with
-`include vela.core;`. `main` returns the process exit code.
+`include vela.core;`. `main` may return `Int` as a process exit code or `Void`
+for an implicit successful exit. `Void` is legal only as a return type; the
+legacy source spelling `Unit` produces warning `VELW001`.
 
 ## Bindings, values, and conversion
 
@@ -55,6 +56,18 @@ fn factorial(value: Int) -> Int {
         return value * factorial(value - 1);
     }
 }
+```
+
+Required parameters precede optional parameters. Defaults run at the call site,
+may reference earlier parameters, and every argument expression is evaluated
+exactly once. Positional arguments precede named arguments.
+
+```vela
+fn connect(host: Text, port: Int = 8080, timeout_ms: Int = 5000) -> Void { }
+
+connect("localhost");
+connect("localhost", timeout_ms: 1000);
+connect(timeout_ms: 2500, host: "localhost", port: 9000);
 ```
 
 `if`/`else` and `for` use the same brace model:
@@ -108,6 +121,18 @@ fn exit_code(state: State) -> Int {
 }
 ```
 
+`match` adds exhaustive variant patterns for enums, `Option<T>`, and
+`Result<T,E>`, plus exact primitive literal cases. Use `some<T>`, `none<T>`,
+`ok<T,E>`, and `err<T,E>` to construct algebraic values.
+
+```vela
+let result = ok<Int, Text>(42);
+match result {
+    case Ok(value) { print(value); }
+    case Err(error) { print(error); }
+}
+```
+
 ## Comments, documentation, cleanup, and exceptions
 
 Vela accepts regular line comments (`//`) and nested block comments
@@ -115,6 +140,11 @@ Vela accepts regular line comments (`//`) and nested block comments
 next declaration when separated only by whitespace. They preserve source spans
 for future editor tooling and support `@param`, `@returns`, `@throws`,
 `@example`, and `@deprecated` tags.
+
+Declaration attributes `@since("version")`, `@deprecated("message")`,
+`@experimental`, and `@doc(hidden)` are validated metadata for documentation and
+future IDE integrations. Deprecated and experimental uses emit warnings without
+runtime reflection.
 
 `defer` evaluates its call target and arguments immediately, then executes the
 call in last-in-first-out order when its lexical block exits. It runs for normal
@@ -179,8 +209,12 @@ interface Printable {
     fn render() -> Text;
 }
 
-class Counter implements Printable {
-    var value: Int;
+interface Resettable {
+    fn reset() -> Void;
+}
+
+class Counter(start: Int) implements Printable, Resettable {
+    var value: Int = start;
 
     fn increment() -> Int {
         self.value = self.value + 1;
@@ -190,7 +224,25 @@ class Counter implements Printable {
     fn render() -> Text {
         return "Counter";
     }
+
+    fn reset() -> Void {
+        self.value = 0;
+    }
 }
+```
+
+Every class declares its constructor list at class level (`class Empty()`) and
+every class field is initialized. Constructor parameters remain available to
+field initializers and methods. The compiler merges and verifies every listed
+interface contract. Struct construction remains field-based.
+
+Tuples contain two through eight fixed elements. Tuple and record destructuring
+creates immutable bindings, requires exact arity/fields, and allows `_` as a
+discard.
+
+```vela
+let (host, port) = ("localhost", 8080);
+let ServerConfig { name, timeout_ms } = config;
 ```
 
 Members are package-internal by default. Prefix a top-level declaration with
@@ -245,7 +297,7 @@ fn main() -> Int {
 
 `vela build --lib` emits a platform-native shared library and a
 `.velaabi.json` manifest. The current cross-package importer supports scalar
-`Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Unit` signatures. Text,
+`Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Void` signatures. Text,
 decimal, objects, arrays, and collections are intentionally not passed across
 the ABI boundary yet.
 
@@ -269,16 +321,18 @@ them. Their aliases default to the final module name.
 
 | Import | Representative operations |
 | --- | --- |
-| `vela.core.json` | `is_valid`, `compact`, `pretty`, `try_get_text/int/bool` |
+| `vela.core.json` | `is_valid`, `compact`, `pretty`, `quote`, `try_get_text/int/bool` |
 | `vela.core.crypto` | `sha256`, `hmac_sha256`, fixed-time comparison, random hex |
 | `vela.core.tcp` | bounded synchronous connect, send, receive, close |
-| `vela.core.text` | ordinal search, trim, invariant casing, checked slice |
+| `vela.core.text` | search, trim, casing, parsing/formatting, Unicode scalar creation |
 | `vela.core.math` | `abs`, `min`, `max`, `clamp`, `sqrt`, `pow` |
 | `vela.core.time` | UTC milliseconds and monotonic timing |
 | `vela.core.random` | fast integer and double random values |
-| `vela.core.io` | UTF-8 file existence, read, write, append |
+| `vela.core.io` | files/directories, deterministic listing, paths, temporary workspaces |
 | `vela.core.encoding` | UTF-8 byte count, hexadecimal and Base64 conversion |
 | `vela.core.env` | environment variables, process arguments, current directory |
+| `vela.core.system` | direct bounded process execution, executable lookup, process metadata |
+| `vela.core.console` | stdout/stderr output, redirection and color capability |
 | `vela.concurrent` | explicit cancellation creation, request, and state |
 
 ```vela
@@ -307,6 +361,7 @@ Use `--quiet` to suppress normal progress, `--color never` for plain output, and
 ```powershell
 dotnet run --project .\src\Vela.Cli -- check .\examples\factorial.vela
 dotnet run --project .\src\Vela.Cli -- build .\examples\factorial.vela --output .\artifacts\factorial
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-cli-app -- --name Ada
 ```
 
 The compiler selects the host runtime identifier by default. Use `vela targets`

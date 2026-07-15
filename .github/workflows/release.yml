@@ -24,10 +24,15 @@ on:
 permissions:
   contents: read
 
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MSBuildEnableWorkloadResolver: false
+
 jobs:
   prepare:
     name: Validate release metadata
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
@@ -75,10 +80,62 @@ jobs:
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
 
+  signing-preflight:
+    name: Validate signing credentials
+    needs: prepare
+    runs-on: ubuntu-24.04
+    environment: release
+    env:
+      WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      MACOS_APPLICATION_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_APPLICATION_CERTIFICATE_P12_BASE64 }}
+      MACOS_APPLICATION_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_APPLICATION_CERTIFICATE_PASSWORD }}
+      MACOS_INSTALLER_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_INSTALLER_CERTIFICATE_P12_BASE64 }}
+      MACOS_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_INSTALLER_CERTIFICATE_PASSWORD }}
+      MACOS_APPLICATION_IDENTITY: ${{ secrets.MACOS_APPLICATION_IDENTITY }}
+      MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+      APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+      LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
+      LINUX_GPG_KEY_ID: ${{ secrets.LINUX_GPG_KEY_ID }}
+    steps:
+      - name: Require every production signing secret
+        if: needs.prepare.outputs.sign == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            WINDOWS_CERTIFICATE_PFX_BASE64
+            WINDOWS_CERTIFICATE_PASSWORD
+            MACOS_APPLICATION_CERTIFICATE_P12_BASE64
+            MACOS_APPLICATION_CERTIFICATE_PASSWORD
+            MACOS_INSTALLER_CERTIFICATE_P12_BASE64
+            MACOS_INSTALLER_CERTIFICATE_PASSWORD
+            MACOS_APPLICATION_IDENTITY
+            MACOS_INSTALLER_IDENTITY
+            APPLE_NOTARY_KEY_ID
+            APPLE_NOTARY_ISSUER_ID
+            APPLE_NOTARY_KEY_P8_BASE64
+            LINUX_GPG_PRIVATE_KEY
+            LINUX_GPG_KEY_ID
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then missing+=("$name"); fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required release environment secret: %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+          echo 'All required signing credentials are configured.'
+
   windows:
     name: Windows x64
-    needs: prepare
-    runs-on: windows-2022
+    needs:
+      - prepare
+      - signing-preflight
+    runs-on: windows-2025
     environment: release
     permissions:
       contents: read
@@ -92,18 +149,22 @@ jobs:
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Publish Native AOT compiler
         shell: pwsh
         run: |
           dotnet publish .\src\Vela.Cli\Vela.Cli.csproj --configuration Release --runtime win-x64 --self-contained true "-p:PublishAot=true" "-p:StripSymbols=true" "-p:Version=$env:VERSION" --output $env:PUBLISH
           Move-Item "$env:PUBLISH\Vela.Cli.exe" "$env:PUBLISH\vela.exe"
+
+      - name: Stage installed compiler runtime
+        shell: pwsh
+        run: .\eng\release\stage-runtime.ps1 -PublishDirectory $env:PUBLISH
 
       - name: Sign compiler binary
         if: needs.prepare.outputs.sign == 'true'
@@ -136,15 +197,16 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "$env:PUBLISH\vela.exe" "$env:DIST\vela-$env:VERSION-win-x64.exe"
+          Compress-Archive -Path "$env:PUBLISH\*" -DestinationPath "$env:DIST\vela-$env:VERSION-win-x64.zip"
           "DIRECT_ARTIFACT=$env:DIST\vela-$env:VERSION-win-x64.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Attest compiler provenance
-        uses: actions/attest@v4
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-path: ${{ env.DIRECT_ARTIFACT }}
 
       - name: Upload Windows distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-windows-x64
           if-no-files-found: error
@@ -152,7 +214,9 @@ jobs:
 
   macos:
     name: macOS ${{ matrix.architecture }}
-    needs: prepare
+    needs:
+      - prepare
+      - signing-preflight
     runs-on: ${{ matrix.runner }}
     environment: release
     permissions:
@@ -163,10 +227,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15-intel
             runtime: osx-x64
             architecture: x64
-          - runner: macos-14
+          - runner: macos-15
             runtime: osx-arm64
             architecture: arm64
     env:
@@ -185,12 +249,12 @@ jobs:
       APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Publish Native AOT compiler
         shell: bash
@@ -204,6 +268,10 @@ jobs:
             -p:Version="$VERSION" \
             --output "$PUBLISH"
           mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"
+
+      - name: Stage installed compiler runtime
+        shell: bash
+        run: pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory "$PUBLISH"
 
       - name: Import signing certificates
         if: needs.prepare.outputs.sign == 'true'
@@ -244,15 +312,16 @@ jobs:
         shell: bash
         run: |
           cp "$PUBLISH/vela" "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}"
+          tar -C "$PUBLISH" -czf "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}.tar.gz" .
           echo "DIRECT_ARTIFACT=$DIST/vela-$VERSION-macos-${{ matrix.architecture }}" >> "$GITHUB_ENV"
 
       - name: Attest compiler provenance
-        uses: actions/attest@v4
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-path: ${{ env.DIRECT_ARTIFACT }}
 
       - name: Upload macOS distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-macos-${{ matrix.architecture }}
           if-no-files-found: error
@@ -266,7 +335,7 @@ jobs:
       - macos
       - linux
     if: needs.prepare.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: write
@@ -276,7 +345,7 @@ jobs:
       TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: release-*
           merge-multiple: true
@@ -298,8 +367,10 @@ jobs:
 
   linux:
     name: Linux x64
-    needs: prepare
-    runs-on: ubuntu-22.04
+    needs:
+      - prepare
+      - signing-preflight
+    runs-on: ubuntu-24.04
     environment: release
     permissions:
       contents: read
@@ -314,12 +385,12 @@ jobs:
       LINUX_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Install packaging tools
         shell: bash
@@ -341,6 +412,10 @@ jobs:
             --output "$PUBLISH"
           mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"
 
+      - name: Stage installed compiler runtime
+        shell: bash
+        run: pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory "$PUBLISH"
+
       - name: Build DEB and RPM packages
         shell: bash
         run: ./eng/release/linux/build-packages.sh "$VERSION" "$PUBLISH" "$DIST"
@@ -349,20 +424,21 @@ jobs:
         shell: bash
         run: |
           install -D -m 0755 "$PUBLISH/vela" "$DIST/vela-$VERSION-linux-x64"
+          tar -C "$PUBLISH" -czf "$DIST/vela-$VERSION-linux-x64.tar.gz" .
           echo "DIRECT_ARTIFACT=$DIST/vela-$VERSION-linux-x64" >> "$GITHUB_ENV"
 
       - name: Sign Linux artifacts
         if: needs.prepare.outputs.sign == 'true'
         shell: bash
-        run: ./eng/release/linux/sign-artifacts.sh "$DIRECT_ARTIFACT" "$DIST/vela_${VERSION}_amd64.deb" "$DIST/vela-$VERSION-1.x86_64.rpm"
+        run: ./eng/release/linux/sign-artifacts.sh "$DIRECT_ARTIFACT" "$DIST/vela_${VERSION}_amd64.deb" "$DIST/vela-$VERSION-1.x86_64.rpm" "$DIST/vela-$VERSION-linux-x64.tar.gz"
 
       - name: Attest compiler provenance
-        uses: actions/attest@v4
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
         with:
           subject-path: ${{ env.DIRECT_ARTIFACT }}
 
       - name: Upload Linux distribution
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-linux-x64
           if-no-files-found: error

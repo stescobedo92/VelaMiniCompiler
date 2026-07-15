@@ -1,0 +1,181 @@
+name: Package smoke tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/package-smoke.yml'
+      - 'eng/release/**'
+      - 'global.json'
+      - 'src/**'
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MSBuildEnableWorkloadResolver: false
+  VERSION: 0.0.0
+
+jobs:
+  windows:
+    name: Windows x64 installers
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: choco install wixtoolset --version=3.11.2 --yes --no-progress
+
+      - name: Publish and stage compiler
+        shell: pwsh
+        run: |
+          dotnet publish .\src\Vela.Cli\Vela.Cli.csproj --configuration Release --runtime win-x64 --self-contained true '-p:PublishAot=true' '-p:StripSymbols=true' --output .release\publish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item .release\publish\Vela.Cli.exe .release\publish\vela.exe
+          .\eng\release\stage-runtime.ps1 -PublishDirectory .release\publish
+
+      - name: Build MSI, wizard, and portable archive
+        shell: pwsh
+        run: |
+          .\eng\release\windows\build-msi.ps1 -Version $env:VERSION -PublishDirectory .release\publish -OutputDirectory .release\dist
+          .\eng\release\windows\build-bundle.ps1 -Version $env:VERSION -MsiPath ".release\dist\vela-$env:VERSION-win-x64.msi" -OutputDirectory .release\dist
+          Compress-Archive -Path .release\publish\* -DestinationPath ".release\dist\vela-$env:VERSION-win-x64.zip"
+
+      - name: Extract MSI and run installed-layout compiler
+        shell: pwsh
+        run: |
+          $target = [System.IO.Path]::GetFullPath('.release\installed')
+          $process = Start-Process msiexec.exe -ArgumentList @('/a', ".release\dist\vela-$env:VERSION-win-x64.msi", '/qn', "TARGETDIR=$target") -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "MSI administrative extraction failed with exit code $($process.ExitCode)." }
+          $compiler = Get-ChildItem -LiteralPath $target -Filter vela.exe -Recurse | Select-Object -First 1
+          if ($null -eq $compiler) { throw 'The MSI did not contain vela.exe.' }
+          & $compiler.FullName targets --color never
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload unsigned smoke artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: smoke-windows-x64
+          if-no-files-found: error
+          path: .release/dist/*
+
+  macos:
+    name: macOS ${{ matrix.architecture }} installers
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            runtime: osx-x64
+            architecture: x64
+          - runner: macos-15
+            runtime: osx-arm64
+            architecture: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Publish and stage compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish src/Vela.Cli/Vela.Cli.csproj --configuration Release --runtime '${{ matrix.runtime }}' --self-contained true -p:PublishAot=true -p:StripSymbols=true --output .release/publish
+          mv .release/publish/Vela.Cli .release/publish/vela
+          pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory .release/publish
+
+      - name: Build PKG, DMG, and portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./eng/release/macos/build-package.sh "$VERSION" '${{ matrix.architecture }}' .release/publish .release/dist
+          ./eng/release/macos/build-dmg.sh ".release/dist/vela-$VERSION-macos-${{ matrix.architecture }}.pkg" .release/dist
+          tar -C .release/publish -czf ".release/dist/vela-$VERSION-macos-${{ matrix.architecture }}.tar.gz" .
+
+      - name: Expand PKG and run installed-layout compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkgutil --expand-full ".release/dist/vela-$VERSION-macos-${{ matrix.architecture }}.pkg" .release/expanded
+          compiler="$(find .release/expanded -type f -path '*/usr/local/lib/vela/vela' -print -quit)"
+          test -n "$compiler"
+          chmod +x "$compiler"
+          "$compiler" targets --color never
+
+      - name: Upload unsigned smoke artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: smoke-macos-${{ matrix.architecture }}
+          if-no-files-found: error
+          path: .release/dist/*
+
+  linux:
+    name: Linux x64 packages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Install packaging tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes rpm
+          sudo gem install fpm --no-document
+
+      - name: Publish and stage compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish src/Vela.Cli/Vela.Cli.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishAot=true -p:StripSymbols=true --output .release/publish
+          mv .release/publish/Vela.Cli .release/publish/vela
+          pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory .release/publish
+
+      - name: Build DEB, RPM, and portable archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./eng/release/linux/build-packages.sh "$VERSION" .release/publish .release/dist
+          tar -C .release/publish -czf ".release/dist/vela-$VERSION-linux-x64.tar.gz" .
+          dpkg-deb --contents ".release/dist/vela_${VERSION}_amd64.deb"
+          rpm -qpl ".release/dist/vela-$VERSION-1.x86_64.rpm"
+
+      - name: Extract DEB and run installed-layout compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          dpkg-deb --extract ".release/dist/vela_${VERSION}_amd64.deb" .release/installed
+          .release/installed/usr/local/lib/vela/vela targets --color never
+
+      - name: Upload unsigned smoke artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: smoke-linux-x64
+          if-no-files-found: error
+          path: .release/dist/*

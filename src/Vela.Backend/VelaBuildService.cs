@@ -7,6 +7,7 @@ namespace Vela.Backend;
 public sealed class VelaBuildService
 {
     private readonly string _runtimeProjectPath;
+    private readonly string? _globalJsonPath;
 
     public VelaBuildService(string runtimeProjectPath)
     {
@@ -16,6 +17,8 @@ public sealed class VelaBuildService
         {
             throw new FileNotFoundException("The Vela runtime project was not found.", _runtimeProjectPath);
         }
+
+        _globalJsonPath = FindFileInAncestors(Path.GetDirectoryName(_runtimeProjectPath)!, "global.json");
     }
 
     public async Task<BuildResult> BuildAsync(VelaCompilation compilation, BuildOptions options, CancellationToken cancellationToken = default)
@@ -118,13 +121,48 @@ public sealed class VelaBuildService
         var projectPath = Path.Combine(sourceDirectory, "Vela.Generated.csproj");
         File.WriteAllText(sourcePath, compilation.GeneratedSource);
         File.WriteAllText(projectPath, CreateProjectFile(applicationName, options.ArtifactKind));
+        if (_globalJsonPath is not null)
+        {
+            File.Copy(_globalJsonPath, Path.Combine(sourceDirectory, "global.json"), overwrite: true);
+        }
+
         return new GeneratedProject(sourceDirectory, sourcePath, projectPath, publishDirectory);
     }
 
-    public static async Task<ProcessResult> RunGeneratedProjectAsync(GeneratedProject project, CancellationToken cancellationToken = default)
+    private static string? FindFileInAncestors(string startDirectory, string fileName)
+    {
+        for (var directory = new DirectoryInfo(startDirectory); directory is not null; directory = directory.Parent)
+        {
+            var candidate = Path.Combine(directory.FullName, fileName);
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    public static Task<ProcessResult> RunGeneratedProjectAsync(
+        GeneratedProject project,
+        CancellationToken cancellationToken = default) =>
+        RunGeneratedProjectAsync(project, [], cancellationToken);
+
+    public static async Task<ProcessResult> RunGeneratedProjectAsync(
+        GeneratedProject project,
+        IReadOnlyList<string> programArguments,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(project);
-        return await RunDotnetAsync(["run", "--configuration", "Release", "--project", project.ProjectPath, "--nologo"], project.SourceDirectory, cancellationToken);
+        ArgumentNullException.ThrowIfNull(programArguments);
+        var arguments = new List<string> { "run", "--configuration", "Release", "--project", project.ProjectPath };
+        if (programArguments.Count > 0)
+        {
+            arguments.Add("--");
+            arguments.AddRange(programArguments);
+        }
+
+        return await RunDotnetAsync(arguments, project.SourceDirectory, cancellationToken);
     }
 
     /// <summary>Finds the executable produced for an application without inferring an extension from a RID.</summary>

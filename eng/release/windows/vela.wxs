@@ -27,12 +27,18 @@
                          System="yes"
                          Permanent="no" />
           </Component>
+          <Directory Id="RUNTIMEFOLDER" Name="runtime" />
+          <Component Id="VelaSdkPinComponent" Guid="*" Win64="yes">
+            <File Id="VelaSdkPin" Source="$(var.SourceDir)\global.json" KeyPath="yes" />
+          </Component>
         </Directory>
       </Directory>
     </Directory>
 
     <Feature Id="VelaCompiler" Title="Vela Compiler" Level="1">
       <ComponentRef Id="VelaCompilerComponent" />
+      <ComponentRef Id="VelaSdkPinComponent" />
+      <ComponentGroupRef Id="VelaRuntimeComponents" />
     </Feature>
   </Product>
 </Wix>

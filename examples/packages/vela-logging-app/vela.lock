@@ -1,0 +1,19 @@
+{
+  "LockVersion": 1,
+  "Packages": [
+    {
+      "Name": "vela.logging.sample",
+      "Version": "0.1.0",
+      "Kind": "application",
+      "Path": ".",
+      "ManifestHash": "7efdc7d84200c3171f1304ea6621c178140a24b1280b7b5579177624ba4ef422"
+    },
+    {
+      "Name": "vela.std.log",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.log",
+      "ManifestHash": "197dfc251f14c2b210e5746e82decc0d55242926442752f483462ec0cb025145"
+    }
+  ]
+}

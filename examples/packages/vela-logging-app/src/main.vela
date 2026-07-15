@@ -1,0 +1,11 @@
+include vela.std.log as log;
+
+fn main() -> Void {
+    let human = log.logger("worker", min_level: 0);
+    human.trace("starting");
+    human.with_field("job", "42").info("processing");
+    human.warn("demonstration warning");
+
+    let structured = log.logger("worker", json: true, color: false);
+    structured.with_field("result", "ok").info("completed");
+}

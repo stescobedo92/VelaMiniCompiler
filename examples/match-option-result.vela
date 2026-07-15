@@ -1,0 +1,21 @@
+// Algebraic values and exhaustive matching make every outcome explicit.
+fn print_optional(value: Option<Int>) -> Void {
+    match value {
+        case Some(number) { print(number); }
+        case None { print("missing"); }
+    }
+}
+
+fn print_result(result: Result<Int, Text>) -> Void {
+    match result {
+        case Ok(value) { print(value); }
+        case Err(error) { print("error: " + error); }
+    }
+}
+
+fn main() -> Void {
+    print_optional(some<Int>(21));
+    print_optional(none<Int>());
+    print_result(ok<Int, Text>(42));
+    print_result(err<Int, Text>("not available"));
+}

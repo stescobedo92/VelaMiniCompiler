@@ -1,0 +1,21 @@
+// Constructor parameters are declared with the class and initialize its state.
+class BankAccount(owner_name: Text, opening_balance: Int = 0) {
+    owner: Text = owner_name;
+    var balance: Int = opening_balance;
+
+    fn deposit(amount: Int) -> Void {
+        assert amount > 0, "A deposit must be positive.";
+        self.balance = self.balance + amount;
+    }
+
+    fn describe() -> Text {
+        return self.owner;
+    }
+}
+
+fn main() -> Void {
+    let account = BankAccount(opening_balance: 100, owner_name: "Ada");
+    account.deposit(25);
+    print(account.describe());
+    print(account.balance);
+}

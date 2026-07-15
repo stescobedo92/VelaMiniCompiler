@@ -1,0 +1,10 @@
+// Defaults may refer to earlier parameters; named arguments document call sites.
+fn repeated_total(base: Int, step: Int = base + 1, times: Int = 2) -> Int {
+    return base + step * times;
+}
+
+fn main() -> Void {
+    print(repeated_total(4));
+    print(repeated_total(4, times: 3));
+    print(repeated_total(times: 4, base: 2, step: 5));
+}

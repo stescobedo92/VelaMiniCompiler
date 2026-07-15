@@ -79,8 +79,8 @@ public sealed class VelaParserTests
                 fn render() -> Text;
             }
 
-            class Counter implements Printable {
-                var value: Int;
+            class Counter(start: Int = 0) implements Printable {
+                var value: Int = start;
                 fn render() -> Text {
                     return "Counter";
                 }
@@ -103,7 +103,7 @@ public sealed class VelaParserTests
     [Fact]
     public void ParseInvalidCharacterReportsSourceMappedLexerDiagnostic()
     {
-        const string code = "let value = @;";
+        const string code = "let value = $;";
         var source = new SourceText(code, "invalid-character.vela");
 
         var result = VelaParser.Parse(source);
@@ -114,13 +114,13 @@ public sealed class VelaParserTests
 
         var rendered = DiagnosticFormatter.Format(source, diagnostic);
         Assert.Contains("invalid-character.vela:1:13", rendered, StringComparison.Ordinal);
-        Assert.Contains("Unexpected character '@'.", rendered, StringComparison.Ordinal);
+        Assert.Contains("Unexpected character '$'.", rendered, StringComparison.Ordinal);
     }
 
     [Fact]
     public void ParseMultipleIndependentErrorsRecoversAndContinuesParsing()
     {
-        const string code = "fn bad(value Int) {\n  return @;\n}\nlet = 42;\n";
+        const string code = "fn bad(value Int) {\n  return $;\n}\nlet = 42;\n";
 
         var result = VelaParser.Parse(new SourceText(code, "recovery.vela"));
 
@@ -239,7 +239,7 @@ public sealed class VelaParserTests
     [Fact]
     public void ParseDocumentationAndEnumsAttachMetadataAndValidateKnownTags()
     {
-        const string code = "/// @param missing Not a declared argument.\nfn run(value: Int) -> Unit { return; }\n\n/** A lifecycle. */\nenum State { /// Ready state.\nReady,\nRunning;\n}\n";
+        const string code = "/// @param missing Not a declared argument.\nfn run(value: Int) -> Void { return; }\n\n/** A lifecycle. */\nenum State { /// Ready state.\nReady,\nRunning;\n}\n";
 
         var result = VelaParser.Parse(new SourceText(code, "enum-docs.vela"));
 
@@ -309,5 +309,71 @@ public sealed class VelaParserTests
         Assert.NotNull(function.AsyncKeyword);
         var variable = Assert.IsType<LetStatementSyntax>(function.Body.Statements[0]);
         Assert.IsType<AwaitExpressionSyntax>(variable.Initializer);
+    }
+
+    [Fact]
+    public void ParseProductivitySyntaxCapturesConstructorsArgumentsMatchDestructuringAndAttributes()
+    {
+        const string code = """
+            interface Named {
+                fn name() -> Text;
+            }
+
+            interface Resettable {
+                fn reset() -> Void;
+            }
+
+            @since("0.2.0")
+            class Worker(name: Text, count: Int = 1) implements Named, Resettable {
+                var value: Int = count;
+                fn name() -> Text { return name; }
+                fn reset() -> Void { self.value = 0; }
+            }
+
+            fn use(value: Int, scale: Int = value + 1) -> Int {
+                let (left, right) = (value, scale);
+                return left + right;
+            }
+
+            fn main() -> Void {
+                let worker = Worker(count: 2, name: "vela");
+                match try_unbox<Int>(2) {
+                    case Some(value) { print(value); }
+                    case None { print("none"); }
+                }
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "productivity.vela"));
+
+        Assert.Empty(result.Diagnostics);
+        var worker = Assert.IsType<ObjectDeclarationSyntax>(result.Root.Members[2]);
+        Assert.Equal(2, worker.ConstructorParameters.Count);
+        Assert.Equal(2, worker.ImplementedInterfaces.Count);
+        Assert.Single(worker.Attributes!);
+        Assert.True(worker.ConstructorParameters[1].IsOptional);
+
+        var use = Assert.IsType<FunctionDeclarationSyntax>(result.Root.Members[3]);
+        Assert.IsType<TupleDestructuringStatementSyntax>(use.Body.Statements[0]);
+        var main = Assert.IsType<FunctionDeclarationSyntax>(result.Root.Members[4]);
+        var construction = Assert.IsType<CallExpressionSyntax>(Assert.IsType<LetStatementSyntax>(main.Body.Statements[0]).Initializer);
+        Assert.All(construction.Arguments, static argument => Assert.True(argument.IsNamed));
+        Assert.IsType<MatchStatementSyntax>(main.Body.Statements[1]);
+    }
+
+    [Theory]
+    [InlineData("class Missing { }", "P013")]
+    [InlineData("fn bad(first: Int = 1, second: Int) -> Int { return second; }", "P014")]
+    [InlineData("fn bad() -> Void { print(first: 1, 2); }", "P014")]
+    [InlineData("@experimental\nlet value = 1;", "P012")]
+    [InlineData("let (value, value) = (1, 2);", "P016")]
+    public void ParseInvalidProductivitySyntaxReportsStableDiagnostic(string code, string expectedCode)
+    {
+        var result = VelaParser.Parse(new SourceText(code, "invalid-productivity.vela"));
+
+        var diagnostic = Assert.Single(result.Diagnostics, item => item.Code == expectedCode);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+        Assert.True(diagnostic.Span.Length > 0);
+        Assert.False(string.IsNullOrWhiteSpace(diagnostic.Help));
     }
 }

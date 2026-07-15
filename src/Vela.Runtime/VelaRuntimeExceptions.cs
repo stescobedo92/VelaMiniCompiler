@@ -57,6 +57,10 @@ public sealed class VelaIoException(string message, string? sourceLocation = nul
 public sealed class VelaNetworkException(string message, string? sourceLocation = null, Exception? innerException = null)
     : VelaRuntimeException(message, sourceLocation, innerException);
 
+/// <summary>Thrown when a bounded child-process operation cannot be completed.</summary>
+public sealed class VelaProcessException(string message, string? sourceLocation = null, Exception? innerException = null)
+    : VelaRuntimeException(message, sourceLocation, innerException);
+
 /// <summary>Thrown when a Vela operation observes explicitly requested cancellation.</summary>
 public sealed class VelaCancellationException(string? sourceLocation = null, Exception? innerException = null)
     : VelaRuntimeException("The operation was cancelled.", sourceLocation, innerException);

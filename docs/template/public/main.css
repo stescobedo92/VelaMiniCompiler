@@ -1,0 +1,32 @@
+:root {
+  --vela-indigo: 99, 102, 241;
+  --vela-cyan: 34, 211, 238;
+}
+
+body {
+  --bs-link-color-rgb: var(--vela-indigo);
+  --bs-link-hover-color-rgb: var(--vela-cyan);
+}
+
+article h1 {
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+article h2 {
+  margin-top: 2.25rem;
+}
+
+pre {
+  border: 1px solid rgba(var(--vela-indigo), 0.28);
+  border-radius: 0.75rem;
+}
+
+code {
+  font-variant-ligatures: none;
+}
+
+.navbar-brand {
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}

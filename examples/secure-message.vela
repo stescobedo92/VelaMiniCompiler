@@ -10,9 +10,9 @@ interface Renderable {
     fn render() -> Text;
 }
 
-class SignedMessage implements Renderable {
-    id: Int;
-    payload: Text;
+class SignedMessage(message_id: Int, message_payload: Text) implements Renderable {
+    id: Int = message_id;
+    payload: Text = message_payload;
 
     fn render() -> Text {
         return "message:" + self.payload;

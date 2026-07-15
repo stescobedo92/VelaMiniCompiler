@@ -18,12 +18,16 @@ public sealed record ObjectDeclarationSyntax(
     ObjectDeclarationKind Kind,
     SyntaxToken Identifier,
     IReadOnlyList<GenericParameterSyntax> GenericParameters,
+    SyntaxToken? ConstructorLeftParenthesis,
+    IReadOnlyList<ParameterSyntax> ConstructorParameters,
+    SyntaxToken? ConstructorRightParenthesis,
     SyntaxToken? ImplementsKeyword,
     IReadOnlyList<TypeSyntax> ImplementedInterfaces,
     SyntaxToken LeftBrace,
     IReadOnlyList<ObjectMemberSyntax> Members,
     SyntaxToken RightBrace,
-    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? Keyword).Span.Start, RightBrace.Span.End);
 }
@@ -37,11 +41,14 @@ public sealed record ObjectFieldSyntax(
     SyntaxToken Identifier,
     SyntaxToken ColonToken,
     TypeSyntax Type,
-    DocumentationCommentSyntax? Documentation = null) : ObjectMemberSyntax
+    SyntaxToken? EqualsToken = null,
+    ExpressionSyntax? Initializer = null,
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : ObjectMemberSyntax
 {
     public bool IsMutable => VarKeyword is not null;
 
-    public override TextSpan Span => TextSpan.FromBounds((VarKeyword ?? Identifier).Span.Start, Type.Span.End);
+    public override TextSpan Span => TextSpan.FromBounds((VarKeyword ?? Identifier).Span.Start, (Initializer ?? (SyntaxNode)Type).Span.End);
 }
 
 /// <summary>Declares an implemented object method.</summary>
@@ -61,7 +68,8 @@ public sealed record InterfaceMethodSyntax(
     SyntaxToken RightParenthesis,
     SyntaxToken? ArrowToken,
     TypeSyntax? ReturnType,
-    DocumentationCommentSyntax? Documentation = null) : ObjectMemberSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : ObjectMemberSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds((AsyncKeyword ?? FnKeyword).Span.Start, ReturnType?.Span.End ?? RightParenthesis.Span.End);
 }

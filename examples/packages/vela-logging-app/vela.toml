@@ -1,0 +1,7 @@
+[package]
+name = "vela.logging.sample"
+version = "0.1.0"
+kind = "application"
+
+[dependencies]
+vela.std.log = { path = "../../../packages/vela.std.log" }

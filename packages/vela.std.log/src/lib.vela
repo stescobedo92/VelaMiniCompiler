@@ -1,28 +1,70 @@
-// Small deterministic logging helpers with JSON canonicalization delegated to vela.core.json.
+// Structured, allocation-conscious logging linked directly into Vela applications.
 include vela.core.time as time;
 include vela.core.json as json;
+include vela.core.console as console;
+include vela.core.text as text;
 
-/// Writes an informational message.
-/// @param message Message to write.
-fn log_info(message: Text) -> Unit {
-    print("[info] " + message);
+class VelaLogger(logger_name: Text, minimum_level: Int = 2, json_mode: Bool = false, color_enabled: Bool = true, context_json: Text = "") {
+    fn with_field(key: Text, value: Text) -> VelaLogger {
+        let field = "," + json.quote(key) + ":" + json.quote(value);
+        return VelaLogger(logger_name, minimum_level, json_mode, color_enabled, context_json + field);
+    }
+
+    fn trace(message: Text) -> Void { self.write(0, "trace", message); }
+    fn debug(message: Text) -> Void { self.write(1, "debug", message); }
+    fn info(message: Text) -> Void { self.write(2, "info", message); }
+    fn warn(message: Text) -> Void { self.write(3, "warn", message); }
+    fn error(message: Text) -> Void { self.write(4, "error", message); }
+
+    fn write(level: Int, level_name: Text, message: Text) -> Void {
+        if level < minimum_level {
+            return;
+        }
+
+        var output: Text = "";
+        if json_mode {
+            output = "{\"timestamp\":" + text.from_long(time.utc_unix_milliseconds()) + ",\"level\":" + json.quote(level_name) + ",\"logger\":" + json.quote(logger_name) + ",\"message\":" + json.quote(message) + context_json + "}";
+        }
+        else {
+            output = self.colorize(level, "[" + level_name + "] " + logger_name + ": " + message);
+        }
+
+        if level == 4 {
+            console.write_error_line(output);
+            return;
+        }
+        console.write_line(output);
+    }
+
+    fn colorize(level: Int, value: Text) -> Text {
+        if color_enabled {
+            if console.supports_color() {
+                let escape = text.from_code_point(27);
+                if level == 4 { return escape + "[31m" + value + escape + "[0m"; }
+                if level == 3 { return escape + "[33m" + value + escape + "[0m"; }
+                if level == 2 { return escape + "[36m" + value + escape + "[0m"; }
+                return escape + "[90m" + value + escape + "[0m";
+            }
+        }
+        return value;
+    }
 }
 
-/// Writes a warning message.
-/// @param message Message to write.
-fn log_warn(message: Text) -> Unit {
-    print("[warn] " + message);
+/// Creates a configurable logger. Levels are Trace=0, Debug=1, Info=2, Warn=3, Error=4.
+fn log_logger(name: Text, min_level: Int = 2, json: Bool = false, color: Bool = true) -> VelaLogger {
+    return VelaLogger(name, min_level, json, color);
 }
+
+/// Writes an informational compatibility message.
+fn log_info(message: Text) -> Void { log_logger("app").info(message); }
+
+/// Writes a warning compatibility message.
+fn log_warn(message: Text) -> Void { log_logger("app").warn(message); }
 
 /// Writes a compact JSON event using the shared core JSON implementation.
-/// @param payload JSON payload to canonicalize.
-fn log_json(payload: Text) -> Unit {
-    print(json.compact(payload));
-}
+fn log_json(payload: Text) -> Void { console.write_line(json.compact(payload)); }
 
-/// Writes an informational message with a monotonic timestamp.
-/// @param message Message to write.
-fn log_timed(message: Text) -> Unit {
-    print(time.utc_unix_milliseconds());
-    print("[info] " + message);
+/// Writes an informational message with the current Unix timestamp.
+fn log_timed(message: Text) -> Void {
+    log_logger("app").with_field("timestamp", text.from_long(time.utc_unix_milliseconds())).info(message);
 }

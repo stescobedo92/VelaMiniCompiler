@@ -11,8 +11,8 @@ public struct Point {
     y: Int;
 }
 
-public class Counter implements Printable {
-    var value: Int;
+public class Counter(start: Int) implements Printable {
+    var value: Int = start;
 
     fn increment() -> Int {
         self.value = self.value + 1;

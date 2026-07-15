@@ -71,16 +71,36 @@ public sealed record ParenthesizedExpressionSyntax(
     public override TextSpan Span => TextSpan.FromBounds(LeftParenthesis.Span.Start, RightParenthesis.Span.End);
 }
 
+/// <summary>Represents a fixed-arity tuple value.</summary>
+public sealed record TupleExpressionSyntax(
+    SyntaxToken LeftParenthesis,
+    IReadOnlyList<ExpressionSyntax> Elements,
+    SyntaxToken RightParenthesis) : ExpressionSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(LeftParenthesis.Span.Start, RightParenthesis.Span.End);
+}
+
 public sealed record CallExpressionSyntax(
     ExpressionSyntax Callee,
     SyntaxToken? LessToken,
     IReadOnlyList<TypeSyntax> TypeArguments,
     SyntaxToken? GreaterToken,
     SyntaxToken LeftParenthesis,
-    IReadOnlyList<ExpressionSyntax> Arguments,
+    IReadOnlyList<CallArgumentSyntax> Arguments,
     SyntaxToken RightParenthesis) : ExpressionSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds(Callee.Span.Start, RightParenthesis.Span.End);
+}
+
+/// <summary>Represents one positional or named call argument.</summary>
+public sealed record CallArgumentSyntax(
+    SyntaxToken? Name,
+    SyntaxToken? ColonToken,
+    ExpressionSyntax Expression) : SyntaxNode
+{
+    public bool IsNamed => Name is not null;
+
+    public override TextSpan Span => TextSpan.FromBounds((Name?.Span.Start ?? Expression.Span.Start), Expression.Span.End);
 }
 
 public sealed record ListExpressionSyntax(

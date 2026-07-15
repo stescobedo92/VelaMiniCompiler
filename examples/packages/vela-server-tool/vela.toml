@@ -1,0 +1,8 @@
+[package]
+name = "vela.server.tool"
+version = "0.1.0"
+kind = "application"
+
+[dependencies]
+vela.std.cli = { path = "../../../packages/vela.std.cli" }
+vela.std.log = { path = "../../../packages/vela.std.log" }

@@ -1,0 +1,15 @@
+record ServerConfig {
+    host: Text;
+    port: Int;
+}
+
+fn main() -> Void {
+    let (name, workers) = ("api", 8);
+    print(name);
+    print(workers);
+
+    let config = ServerConfig("localhost", 8080);
+    let ServerConfig { host, port } = config;
+    print(host);
+    print(port);
+}

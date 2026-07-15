@@ -1,0 +1,16 @@
+- name: Getting started
+  href: getting-started.md
+- name: Language tour
+  href: language-tour.md
+- name: Core modules
+  href: core-modules.md
+- name: Standard library
+  href: standard-library.md
+- name: CLI reference
+  href: cli-reference.md
+- name: Examples
+  href: examples.md
+- name: Diagnostics and safety
+  href: diagnostics.md
+- name: Architecture and performance
+  href: architecture.md

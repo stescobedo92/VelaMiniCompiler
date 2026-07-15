@@ -11,7 +11,8 @@ public sealed record EnumDeclarationSyntax(
     SyntaxToken LeftBrace,
     IReadOnlyList<EnumMemberSyntax> Members,
     SyntaxToken RightBrace,
-    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? EnumKeyword).Span.Start, RightBrace.Span.End);
 }
@@ -20,7 +21,8 @@ public sealed record EnumDeclarationSyntax(
 public sealed record EnumMemberSyntax(
     SyntaxToken Identifier,
     SyntaxToken? Separator,
-    DocumentationCommentSyntax? Documentation = null) : SyntaxNode
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : SyntaxNode
 {
     public override TextSpan Span => TextSpan.FromBounds(Identifier.Span.Start, (Separator ?? Identifier).Span.End);
 }

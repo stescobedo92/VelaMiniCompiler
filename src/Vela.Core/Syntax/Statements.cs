@@ -27,6 +27,31 @@ public sealed record VarStatementSyntax(
     public override TextSpan Span => TextSpan.FromBounds(VarKeyword.Span.Start, Initializer.Span.End);
 }
 
+/// <summary>Binds the elements of a tuple to immutable local names.</summary>
+public sealed record TupleDestructuringStatementSyntax(
+    SyntaxToken LetKeyword,
+    SyntaxToken LeftParenthesis,
+    IReadOnlyList<SyntaxToken> Bindings,
+    SyntaxToken RightParenthesis,
+    SyntaxToken EqualsToken,
+    ExpressionSyntax Initializer) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(LetKeyword.Span.Start, Initializer.Span.End);
+}
+
+/// <summary>Binds the public fields of a record to immutable local names.</summary>
+public sealed record RecordDestructuringStatementSyntax(
+    SyntaxToken LetKeyword,
+    SyntaxToken RecordType,
+    SyntaxToken LeftBrace,
+    IReadOnlyList<SyntaxToken> Fields,
+    SyntaxToken RightBrace,
+    SyntaxToken EqualsToken,
+    ExpressionSyntax Initializer) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(LetKeyword.Span.Start, Initializer.Span.End);
+}
+
 public sealed record FunctionDeclarationSyntax(
     SyntaxToken? PublicKeyword,
     SyntaxToken? FfiKeyword,
@@ -41,7 +66,8 @@ public sealed record FunctionDeclarationSyntax(
     TypeSyntax? ReturnType,
     SyntaxToken LeftBrace,
     BlockSyntax Body,
-    DocumentationCommentSyntax? Documentation = null) : StatementSyntax
+    DocumentationCommentSyntax? Documentation = null,
+    IReadOnlyList<AttributeSyntax>? Attributes = null) : StatementSyntax
 {
     public override TextSpan Span => TextSpan.FromBounds((PublicKeyword ?? FfiKeyword ?? AsyncKeyword ?? FnKeyword).Span.Start, Body.Span.End);
 }
@@ -172,6 +198,46 @@ public sealed record SwitchDefaultClauseSyntax(
     BlockSyntax Body) : SyntaxNode
 {
     public override TextSpan Span => TextSpan.FromBounds(DefaultKeyword.Span.Start, Body.Span.End);
+}
+
+/// <summary>Selects a case using an exhaustive enum, Option, Result, or literal pattern.</summary>
+public sealed record MatchStatementSyntax(
+    SyntaxToken MatchKeyword,
+    ExpressionSyntax Expression,
+    SyntaxToken LeftBrace,
+    IReadOnlyList<MatchCaseSyntax> Cases,
+    SwitchDefaultClauseSyntax? DefaultClause,
+    SyntaxToken RightBrace) : StatementSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(MatchKeyword.Span.Start, RightBrace.Span.End);
+}
+
+/// <summary>Represents one pattern and its isolated case block.</summary>
+public sealed record MatchCaseSyntax(
+    SyntaxToken CaseKeyword,
+    MatchPatternSyntax Pattern,
+    BlockSyntax Body) : SyntaxNode
+{
+    public override TextSpan Span => TextSpan.FromBounds(CaseKeyword.Span.Start, Body.Span.End);
+}
+
+/// <summary>Base syntax for a match pattern.</summary>
+public abstract record MatchPatternSyntax : SyntaxNode;
+
+/// <summary>Matches Some, None, Ok, or Err and optionally binds its payload.</summary>
+public sealed record VariantMatchPatternSyntax(
+    SyntaxToken Variant,
+    SyntaxToken? LeftParenthesis,
+    SyntaxToken? Binding,
+    SyntaxToken? RightParenthesis) : MatchPatternSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(Variant.Span.Start, (RightParenthesis ?? Binding ?? Variant).Span.End);
+}
+
+/// <summary>Matches an enum member or scalar literal.</summary>
+public sealed record ValueMatchPatternSyntax(ExpressionSyntax Value) : MatchPatternSyntax
+{
+    public override TextSpan Span => Value.Span;
 }
 
 public sealed record ElseClauseSyntax(

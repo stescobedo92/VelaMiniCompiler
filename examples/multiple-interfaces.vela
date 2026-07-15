@@ -1,0 +1,28 @@
+// A class must satisfy every method contract from every implemented interface.
+interface Named {
+    fn name() -> Text;
+}
+
+interface Resettable {
+    fn reset() -> Void;
+}
+
+interface Measurable {
+    fn value() -> Int;
+}
+
+class Counter(label: Text, initial: Int = 0) implements Named, Resettable, Measurable {
+    var current: Int = initial;
+
+    fn name() -> Text { return label; }
+    fn reset() -> Void { self.current = 0; }
+    fn value() -> Int { return self.current; }
+}
+
+fn main() -> Void {
+    let counter = Counter("requests", 42);
+    print(counter.name());
+    print(counter.value());
+    counter.reset();
+    print(counter.value());
+}

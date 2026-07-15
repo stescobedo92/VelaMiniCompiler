@@ -8,7 +8,7 @@ interface ValueSource {
 }
 
 /// Simple async implementation used by the example.
-class ConstantSource implements ValueSource {
+class ConstantSource() implements ValueSource {
     async fn load() -> Int {
         return 42;
     }

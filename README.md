@@ -20,9 +20,11 @@ statements.
 - **Fast core collections.** `Vector`, `HashMap`, `HashSet`, `Queue`, `Stack`,
   `RingBuffer`, and `BitSet` use Native-AOT-safe .NET data structures. Hash-map
   and hash-set lookup/insert/remove are expected O(1); vector indexing is O(1).
-- **A familiar object model.** Classes, structs, interfaces, immutable `let`,
-  mutable `var`, records, generics, arrays, nullable values, boxing, and checked
-  unboxing are available in the current language surface.
+- **A familiar object model.** Classes use mandatory primary constructors and
+  may implement any number of compiler-validated interfaces. Structs, records,
+  generics, arrays, nullable values, boxing, and checked unboxing are available.
+- **Explicit domain flow.** `Option<T>` and `Result<T,E>` have typed factories,
+  while exhaustive `match` catches missing enum or result cases at compile time.
 - **Local, reproducible packages.** A `vela.toml` graph resolves deterministic
   local dependencies and records their manifest hashes in `vela.lock`.
   `source-library` packages are linked as Vela source (so they retain classes,
@@ -34,13 +36,17 @@ statements.
 
 ## Current feature set
 
-- Types: `Int`, `UInt`, `Long`, `Float`, `Double`, `Decimal`, `Bool`, `Text`
+- Types: `Void` returns, `Int`, `UInt`, `Long`, `Float`, `Double`, `Decimal`, `Bool`, `Text`
   (`String` alias), `Any`, `Array<T>`, `Option<T>`, `Result<T, E>`, and generic
-  collection types, plus `Future<T>` and `Cancellation` for asynchronous work.
+  collection and tuple types, plus `Future<T>` and `Cancellation` for asynchronous work.
   There is intentionally no `UFloat` type.
 - Checked conversions such as `Int(value)`, `UInt(value)`, `Long(value)`,
   `Float(value)`, `Double(value)`, and `Decimal(value)`.
-- Brace-based `if`/`else`, `for`, `while`, `break`, `continue`, and literal
+- Named/default arguments with exactly-once evaluation, tuple/record
+  destructuring, and compile-time `@since`, `@deprecated`, `@experimental`, and
+  `@doc(hidden)` metadata.
+- Brace-based `if`/`else`, `for`, `while`, `break`, `continue`, exhaustive
+  `match`, and literal
   `switch` cases with no fall-through. Strongly typed `enum` values require an
   exhaustive `switch` unless a `default` branch is present.
 - Comments for editor tooling: `//`, nested `/* ... */`, `///`, and `/** ... */`.
@@ -54,9 +60,13 @@ statements.
 - `include vela.core;` for the core surface and `include package.name as alias;`
   for manifest-declared native or source-linked package dependencies.
 - Explicit, Native-AOT-trimmed core modules: `json`, `crypto`, `tcp`, `text`,
-  `math`, `time`, `random`, `io`, `encoding`, `env`, and `vela.concurrent`.
+  `math`, `time`, `random`, expanded `io`, `encoding`, `env`, `system`,
+  `console`, and `vela.concurrent`.
+- Source-linked `vela.std.cli` and `vela.std.log` packages for typed command
+  definitions, O(1) expected option lookup, level filtering, terminal-aware
+  color, stderr routing, and structured JSON that reuses `vela.core.json`.
 - `public ffi fn` exports scalar native ABI functions. Cross-package calls
-  currently support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Unit`;
+  currently support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Void`;
   `Text` and `Decimal` are emitted as library ABI values but are not yet accepted
   by the importing call generator.
 
@@ -94,6 +104,9 @@ GitHub releases publish signed Native AOT compiler artifacts for Windows x64,
 macOS (Apple Silicon and Intel), and Linux x64. Windows offers both an MSI and
 a normal graphical setup wizard; macOS offers PKG and DMG; Linux offers DEB and
 RPM packages. Each installer makes `vela` available globally after installation.
+Portable ZIP/TAR archives include the adjacent runtime support project required
+by `vela run` and `vela build`; use those instead of copying the bare executable
+alone.
 
 For release signing, verification, CI behavior, and exact install commands, see
 [the release and installation guide](docs/releasing.md).
@@ -156,6 +169,12 @@ The example uses `vela.std.cli`, `vela.std.config`, `vela.std.log`, and
 `vela.std.test`. `vela.std.config` and `vela.std.log` route all JSON work through
 the one `vela.core.json` implementation; they do not contain another parser.
 
+Pass arguments to a Vela program after `--`:
+
+```powershell
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-cli-app -- --name Ada --json
+```
+
 Check the async plaintext HTTP example without contacting a remote endpoint:
 
 ```powershell
@@ -175,8 +194,14 @@ dotnet run --project .\src\Vela.Cli -- run .\examples\core-text-math.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\secure-message.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\file-json-report.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\language-foundations.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\match-option-result.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\system-exec.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\io-workspace.vela
 dotnet run --project .\src\Vela.Cli -- check .\examples\tcp-echo-client.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-std-app
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-cli-app
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-logging-app
+dotnet run --project .\src\Vela.Cli -- run .\examples\packages\vela-server-tool
 ```
 
 `tcp-echo-client.vela` is intentionally only checked by default; execute it
@@ -187,8 +212,8 @@ only against a trusted local echo server.
 ```vela
 include vela.core;
 
-class Counter implements Printable {
-    var value: Int;
+class Counter(start: Int) implements Printable {
+    var value: Int = start;
 
     fn increment() -> Int {
         self.value = self.value + 1;
@@ -204,17 +229,27 @@ interface Printable {
     fn text() -> Text;
 }
 
-fn main() -> Int {
+fn main() -> Void {
     let counter = Counter(41);
     let next: Int = counter.increment();
     print(next);
-    return 0;
 }
 ```
 
 Read [the language guide](docs/Vela-language.md) for grammar and semantic rules,
 and [the collection guide](docs/Vela-collections.md) for collection APIs and
 complexity guarantees.
+
+Build and preview the searchable DocFX site locally:
+
+```powershell
+dotnet tool restore
+dotnet docfx docs/docfx.json --serve
+```
+
+The site covers installation, language rules, modules, the standard library,
+diagnostics, architecture, performance, examples, and generated public
+compiler/runtime APIs.
 
 ## Status
 

@@ -1,0 +1,16 @@
+// All writes stay inside an isolated temporary workspace.
+include vela.core.io as io;
+include vela.core.text as text;
+
+fn main() -> Void {
+    let workspace = io.temporary_directory();
+    defer io.delete_directory(workspace, true);
+
+    let report = io.combine(workspace, "report.txt");
+    io.write_lines(report, ["Vela", "cross-platform", "safe I/O"]);
+    io.append_text(report, "\ncomplete");
+
+    print(io.read_text(report));
+    print(text.from_long(io.file_size(report)));
+    print(text.from_int(io.list_files(workspace).length));
+}

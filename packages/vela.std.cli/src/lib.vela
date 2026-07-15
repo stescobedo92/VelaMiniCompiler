@@ -1,27 +1,220 @@
-// Command-line helpers linked directly into a Vela application.
+// Deterministic command-line definitions and parsing linked into Vela applications.
 include vela.core.env as env;
+include vela.core.console as console;
+include vela.core.text as text;
 
-/// Gets an argument or a deterministic fallback.
-/// @param index Zero-based argument index.
-/// @param fallback Value returned when the argument is missing.
-fn cli_argument_or(index: Int, fallback: Text) -> Text {
-    let value = env.argument(index);
-    if value.has_value {
+record VelaCliOption {
+    name: Text;
+    alias: Text;
+    description: Text;
+    default_value: Text;
+    required: Bool;
+    is_flag: Bool;
+}
+
+class VelaCliResult(
+    selected_command: Text,
+    parsed_values: HashMap<Text, Text>,
+    error_message: Text,
+    failed: Bool,
+    help_requested: Bool,
+    version_requested: Bool
+) {
+    command: Text = selected_command;
+    values: HashMap<Text, Text> = parsed_values;
+    error: Text = error_message;
+    is_error: Bool = failed;
+    show_help: Bool = help_requested;
+    show_version: Bool = version_requested;
+
+    fn has(name: Text) -> Bool { return self.values.contains(name); }
+
+    fn require_text(name: Text) -> Text {
+        let value = self.values.try_get(name);
+        assert value.has_value, "Missing required CLI value.";
         return value.value;
     }
+
+    fn require_int(name: Text) -> Int {
+        let parsed = text.try_parse_int(self.require_text(name));
+        assert parsed.has_value, "CLI value is not a valid Int.";
+        return parsed.value;
+    }
+
+    fn require_long(name: Text) -> Long {
+        let parsed = text.try_parse_long(self.require_text(name));
+        assert parsed.has_value, "CLI value is not a valid Long.";
+        return parsed.value;
+    }
+
+    fn require_double(name: Text) -> Double {
+        let parsed = text.try_parse_double(self.require_text(name));
+        assert parsed.has_value, "CLI value is not a valid Double.";
+        return parsed.value;
+    }
+
+    fn require_bool(name: Text) -> Bool {
+        let parsed = text.try_parse_bool(self.require_text(name));
+        assert parsed.has_value, "CLI value is not a valid Bool.";
+        return parsed.value;
+    }
+}
+
+class VelaCliCommand(command_name: Text, command_description: Text, command_version: Text = "") {
+    options: List<VelaCliOption> = List<VelaCliOption>();
+    option_indexes: HashMap<Text, Int> = HashMap<Text, Int>();
+    subcommands: List<VelaCliCommand> = List<VelaCliCommand>();
+    subcommand_indexes: HashMap<Text, Int> = HashMap<Text, Int>();
+
+    fn option(
+        name: Text,
+        description: Text,
+        default_value: Text = "",
+        required: Bool = false,
+        alias: Text = ""
+    ) -> VelaCliCommand {
+        return self.add_option(name, description, default_value, required, alias, false);
+    }
+
+    fn flag(name: Text, description: Text, alias: Text = "") -> VelaCliCommand {
+        return self.add_option(name, description, "false", false, alias, true);
+    }
+
+    fn add_option(
+        name: Text,
+        description: Text,
+        default_value: Text,
+        required: Bool,
+        alias: Text,
+        is_flag: Bool
+    ) -> VelaCliCommand {
+        assert text.starts_with(name, "--"), "CLI option names must start with '--'.";
+        assert self.option_indexes.contains(name) == false, "Duplicate CLI option name.";
+        if alias != "" {
+            assert text.starts_with(alias, "-"), "CLI aliases must start with '-'.";
+            assert self.option_indexes.contains(alias) == false, "Duplicate CLI option alias.";
+        }
+
+        let index = self.options.count;
+        self.options.append(VelaCliOption(name, alias, description, default_value, required, is_flag));
+        self.option_indexes.set(name, index);
+        if alias != "" { self.option_indexes.set(alias, index); }
+        return self;
+    }
+
+    fn subcommand(command: VelaCliCommand) -> VelaCliCommand {
+        assert self.subcommand_indexes.contains(command.name()) == false, "Duplicate CLI subcommand.";
+        let index = self.subcommands.count;
+        self.subcommands.append(command);
+        self.subcommand_indexes.set(command.name(), index);
+        return self;
+    }
+
+    fn name() -> Text { return command_name; }
+    fn version() -> Text { return command_version; }
+
+    fn parse() -> VelaCliResult {
+        var active: VelaCliCommand = self;
+        var index: Int = 0;
+        if env.argument_count() > 0 {
+            let first = env.argument(0);
+            if first.has_value {
+                let subcommand_index = self.subcommand_indexes.try_get(first.value);
+                if subcommand_index.has_value {
+                    active = self.subcommands[subcommand_index.value];
+                    index = 1;
+                }
+            }
+        }
+
+        let values = HashMap<Text, Text>();
+        while index < env.argument_count() {
+            let argument = env.argument(index);
+            assert argument.has_value, "CLI argument index became invalid.";
+            let token = argument.value;
+            if token == "--help" {
+                return VelaCliResult(active.name(), values, "", false, true, false);
+            }
+            if token == "--version" {
+                return VelaCliResult(active.name(), values, "", false, false, true);
+            }
+
+            let option_index = active.option_indexes.try_get(token);
+            if option_index.has_value == false {
+                return VelaCliResult(active.name(), values, "Unknown option: " + token, true, false, false);
+            }
+
+            let definition = active.options[option_index.value];
+            if definition.is_flag {
+                values.set(definition.name, "true");
+                index = index + 1;
+                continue;
+            }
+
+            if index + 1 >= env.argument_count() {
+                return VelaCliResult(active.name(), values, "Missing value for option: " + token, true, false, false);
+            }
+            let next = env.argument(index + 1);
+            assert next.has_value, "CLI option value index became invalid.";
+            values.set(definition.name, next.value);
+            index = index + 2;
+        }
+
+        for definition in active.options {
+            if values.contains(definition.name) == false {
+                if definition.required {
+                    return VelaCliResult(active.name(), values, "Missing required option: " + definition.name, true, false, false);
+                }
+                values.set(definition.name, definition.default_value);
+            }
+        }
+
+        return VelaCliResult(active.name(), values, "", false, false, false);
+    }
+
+    fn render_help() -> Text {
+        var output: Text = "Usage: " + command_name + " [options]\n\n" + command_description + "\n\nOptions:\n";
+        for definition in self.options {
+            var names: Text = definition.name;
+            if definition.alias != "" { names = names + ", " + definition.alias; }
+            output = output + "  " + names + "  " + definition.description + "\n";
+        }
+        output = output + "  --help  Show help\n  --version  Show version\n";
+        if self.subcommands.count > 0 {
+            output = output + "\nSubcommands:\n";
+            for command in self.subcommands {
+                output = output + "  " + command.name() + "\n";
+            }
+        }
+        return output;
+    }
+}
+
+/// Creates a command-line definition.
+fn cli_command(name: Text, description: Text, version: Text = "") -> VelaCliCommand {
+    return VelaCliCommand(name, description, version);
+}
+
+/// Prints one structured parse error followed by deterministic help.
+fn cli_print_error_and_help(command: VelaCliCommand, error: Text) -> Void {
+    console.write_error_line("error: " + error);
+    console.write_error_line(command.render_help());
+}
+
+/// Gets an argument or a deterministic fallback.
+fn cli_argument_or(index: Int, fallback: Text) -> Text {
+    let value = env.argument(index);
+    if value.has_value { return value.value; }
     return fallback;
 }
 
 /// Determines whether a command-line flag is present.
-/// @param flag Exact flag to find.
 fn cli_has_flag(flag: Text) -> Bool {
     var index: Int = 0;
     while index < env.argument_count() {
         let current = env.argument(index);
         if current.has_value {
-            if current.value == flag {
-                return true;
-            }
+            if current.value == flag { return true; }
         }
         index = index + 1;
     }
@@ -29,6 +222,4 @@ fn cli_has_flag(flag: Text) -> Bool {
 }
 
 /// Returns the current working directory for diagnostics and help text.
-fn cli_current_directory() -> Text {
-    return env.current_directory();
-}
+fn cli_current_directory() -> Text { return env.current_directory(); }

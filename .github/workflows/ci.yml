@@ -6,35 +6,78 @@ on:
       - main
       - master
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MSBuildEnableWorkloadResolver: false
 
 jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-14
+          - ubuntu-24.04
+          - windows-2025
+          - macos-15
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
-          dotnet-version: 10.0.x
+          global-json-file: global.json
 
       - name: Restore
         run: dotnet restore Vela.slnx
 
-      - name: Build
+      - name: Build with warnings as errors
         run: dotnet build Vela.slnx --configuration Release --no-restore
 
-      - name: Test
-        run: dotnet test Vela.slnx --configuration Release --no-build --no-restore
+      - name: Test parser and syntax
+        run: dotnet test tests/Vela.Core.Tests/Vela.Core.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=core.trx"
+
+      - name: Test semantic backend and packaging services
+        run: dotnet test tests/Vela.Backend.Tests/Vela.Backend.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=backend.trx"
+
+      - name: Test runtime and core modules
+        run: dotnet test tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=runtime.trx"
+
+      - name: Check representative Vela programs
+        shell: pwsh
+        run: |
+          $examples = @(
+            'examples/void-functions.vela',
+            'examples/primary-constructors.vela',
+            'examples/multiple-interfaces.vela',
+            'examples/match-option-result.vela',
+            'examples/named-default-arguments.vela',
+            'examples/destructuring.vela',
+            'examples/attributes.vela',
+            'examples/system-exec.vela',
+            'examples/io-workspace.vela',
+            'examples/packages/vela-cli-app',
+            'examples/packages/vela-logging-app',
+            'examples/packages/vela-server-tool'
+          )
+          foreach ($example in $examples) {
+            dotnet run --project src/Vela.Cli --configuration Release --no-build -- check $example --color never
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: test-results-${{ matrix.os }}
+          if-no-files-found: ignore
+          path: '**/TestResults/*.trx'

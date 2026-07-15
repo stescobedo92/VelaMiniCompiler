@@ -1,0 +1,10 @@
+// Void functions perform work without manufacturing a return value.
+include vela.core.console as console;
+
+fn greet(name: Text) -> Void {
+    console.write_line("Hello, " + name + "!");
+}
+
+fn main() -> Void {
+    greet("Vela");
+}

@@ -20,12 +20,18 @@ if [[ ! -x "$compiler_path" ]]; then
   echo "Expected executable '$compiler_path' was not found." >&2
   exit 1
 fi
+if [[ ! -f "$publish_directory/runtime/Vela.Runtime.csproj" || ! -f "$publish_directory/global.json" ]]; then
+  echo "The staged compiler runtime support files are incomplete." >&2
+  exit 1
+fi
 
 mkdir -p "$output_directory"
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 install -d "$stage/usr/local/lib/vela" "$stage/usr/local/bin"
 install -m 0755 "$compiler_path" "$stage/usr/local/lib/vela/vela"
+cp -R "$publish_directory/runtime" "$stage/usr/local/lib/vela/runtime"
+install -m 0644 "$publish_directory/global.json" "$stage/usr/local/lib/vela/global.json"
 ln -s ../lib/vela/vela "$stage/usr/local/bin/vela"
 
 repository="$GITHUB_REPOSITORY"

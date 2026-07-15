@@ -1,0 +1,78 @@
+name: Documentation
+
+on:
+  pull_request:
+    paths:
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/docs.yml'
+      - 'docs/**'
+      - 'src/**'
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - '.config/dotnet-tools.json'
+      - '.github/workflows/docs.yml'
+      - 'docs/**'
+      - 'src/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MSBuildEnableWorkloadResolver: false
+
+jobs:
+  build:
+    name: Build DocFX site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up pinned .NET SDK
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+
+      - name: Restore pinned tools
+        run: dotnet tool restore
+
+      - name: Build documentation with warnings as errors
+        run: dotnet docfx docs/docfx.json --warningsAsErrors
+
+      - name: Upload documentation preview
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: vela-documentation-preview
+          if-no-files-found: error
+          path: docs/_site
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: docs/_site
+
+  deploy:
+    name: Deploy GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        name: Deploy documentation
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

@@ -102,7 +102,7 @@ internal static class VelaCommandLine
             var generatedProject = buildService.WriteSourceProject(
                 compilation,
                 new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
-            var result = await VelaBuildService.RunGeneratedProjectAsync(generatedProject);
+            var result = await VelaBuildService.RunGeneratedProjectAsync(generatedProject, options.ProgramArguments);
             VelaConsoleRenderer.PrintProgramOutput(result);
             renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2, includeStandardOutput: false, includeStandardError: false);
             return result.ExitCode;
@@ -412,6 +412,12 @@ internal static class VelaCommandLine
 
     private static string FindRuntimeProject()
     {
+        var installedRuntime = Path.Combine(AppContext.BaseDirectory, "runtime", "Vela.Runtime.csproj");
+        if (File.Exists(installedRuntime))
+        {
+            return installedRuntime;
+        }
+
         foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
         {
             for (var directory = new DirectoryInfo(start); directory is not null; directory = directory.Parent)
@@ -424,7 +430,7 @@ internal static class VelaCommandLine
             }
         }
 
-        throw new FileNotFoundException("Unable to locate src/Vela.Runtime/Vela.Runtime.csproj. Run the CLI from the Vela repository.");
+        throw new FileNotFoundException("Unable to locate the Vela runtime support project. Reinstall Vela or run the development CLI from the repository.");
     }
 
     private static int Fail(VelaConsoleRenderer renderer, string message)
@@ -437,7 +443,7 @@ internal static class VelaCommandLine
     {
         renderer.Title("Vela compiler");
         renderer.Detail("check", "vela check [file.vela | package-directory]");
-        renderer.Detail("run", "vela run [file.vela | package-directory]");
+        renderer.Detail("run", "vela run [file.vela | package-directory] [-- program arguments]");
         renderer.Detail("build", "vela build [file.vela | package-directory] [--lib] [--output directory] [--target rid]");
         renderer.Detail("targets", "vela targets");
         renderer.Detail("output", "Detailed and colored by default; use -q or --quiet to reduce output.");
@@ -454,7 +460,8 @@ internal sealed record CommandOptions(
     bool BuildLibrary,
     bool Quiet,
     int Verbosity,
-    ColorMode ColorMode)
+    ColorMode ColorMode,
+    IReadOnlyList<string> ProgramArguments)
 {
     public static CommandOptions Parse(string[] arguments)
     {
@@ -467,13 +474,22 @@ internal sealed record CommandOptions(
         var quiet = false;
         var verbosity = 0;
         var color = ColorMode.Auto;
+        var programArguments = Array.Empty<string>();
+        var hasProgramArgumentSeparator = false;
 
         for (var index = 0; index < arguments.Length; index++)
         {
             var argument = arguments[index];
             if (argument is "--help" or "-h")
             {
-                return new CommandOptions("help", null, null, null, null, false, false, 0, color);
+                return new CommandOptions("help", null, null, null, null, false, false, 0, color, []);
+            }
+
+            if (argument == "--")
+            {
+                hasProgramArgumentSeparator = true;
+                programArguments = arguments[(index + 1)..];
+                break;
             }
 
             if (argument is "--quiet" or "-q")
@@ -538,7 +554,12 @@ internal sealed record CommandOptions(
             }
         }
 
-        return new CommandOptions(command, input, output, target, mode, buildLibrary, quiet, verbosity, color);
+        if (hasProgramArgumentSeparator && command != "run")
+        {
+            throw new ArgumentException("Program arguments after '--' are supported only by 'vela run'.");
+        }
+
+        return new CommandOptions(command, input, output, target, mode, buildLibrary, quiet, verbosity, color, programArguments);
     }
 
     private static ExecutableMode ParseMode(string value) => value switch

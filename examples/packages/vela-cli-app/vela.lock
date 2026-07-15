@@ -1,0 +1,26 @@
+{
+  "LockVersion": 1,
+  "Packages": [
+    {
+      "Name": "vela.cli.sample",
+      "Version": "0.1.0",
+      "Kind": "application",
+      "Path": ".",
+      "ManifestHash": "097760ff44b877c9dff29649a5d1ffadc43a277c9c20e21b3236a395f2456963"
+    },
+    {
+      "Name": "vela.std.cli",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.cli",
+      "ManifestHash": "e214f1f721d90d9aba2219265f9af233a21ee3e25786a6b221269a12fd7b304e"
+    },
+    {
+      "Name": "vela.std.log",
+      "Version": "0.1.0",
+      "Kind": "source-library",
+      "Path": "../../../packages/vela.std.log",
+      "ManifestHash": "197dfc251f14c2b210e5746e82decc0d55242926442752f483462ec0cb025145"
+    }
+  ]
+}

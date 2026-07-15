@@ -1,0 +1,57 @@
+{
+  "metadata": [
+    {
+      "src": [
+        {
+          "files": [
+            "src/Vela.Core/Vela.Core.csproj",
+            "src/Vela.Runtime/Vela.Runtime.csproj",
+            "src/Vela.Backend/Vela.Backend.csproj"
+          ],
+          "src": ".."
+        }
+      ],
+      "dest": "api"
+    }
+  ],
+  "build": {
+    "content": [
+      {
+        "files": [
+          "*.md",
+          "toc.yml",
+          "articles/**.md",
+          "articles/**/toc.yml",
+          "api/**.yml",
+          "api/index.md"
+        ]
+      }
+    ],
+    "resource": [
+      {
+        "files": [
+          "assets/**"
+        ]
+      }
+    ],
+    "output": "_site",
+    "template": [
+      "default",
+      "modern",
+      "template"
+    ],
+    "globalMetadata": {
+      "_appName": "Vela",
+      "_appTitle": "Vela compiler documentation",
+      "_appFooter": "Vela is an experimental, native-first language and compiler.",
+      "_enableSearch": true,
+      "_gitContribute": {
+        "repo": "https://github.com/stescobedo92/VelaMiniCompiler",
+        "branch": "master"
+      }
+    },
+    "sitemap": {
+      "baseUrl": "https://stescobedo92.github.io/VelaMiniCompiler/"
+    }
+  }
+}

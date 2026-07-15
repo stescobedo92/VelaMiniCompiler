@@ -1,0 +1,25 @@
+include vela.std.cli as cli;
+include vela.std.log as log;
+
+fn main() -> Void {
+    let command = cli.command("greet", "A typed command-line application.", "0.2.0");
+    command.option("--name", "Name to greet.", default_value: "Vela", alias: "-n");
+    command.flag("--json", "Write structured JSON logs.");
+
+    let parsed = command.parse();
+    if parsed.show_help {
+        print(command.render_help());
+        return;
+    }
+    if parsed.show_version {
+        print(command.version());
+        return;
+    }
+    if parsed.is_error {
+        cli.print_error_and_help(command, parsed.error);
+        return;
+    }
+
+    let logger = log.logger("greet", json: parsed.require_bool("--json"));
+    logger.with_field("name", parsed.require_text("--name")).info("Hello from Vela");
+}

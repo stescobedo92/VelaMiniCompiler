@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Vela.Backend;
+using Vela.Core.Diagnostics;
 using Vela.Core.Source;
 using Xunit;
 
@@ -7,6 +8,8 @@ namespace Vela.Backend.Tests;
 
 public sealed class VelaBackendTests
 {
+    private static readonly string[] CliLogPackageNames = ["vela.std.cli", "vela.std.log"];
+
     [Fact]
     public async Task CompileBasicProgramGeneratesAndRunsFrameworkDependentProject()
     {
@@ -55,8 +58,8 @@ public sealed class VelaBackendTests
                 y: Int;
             }
 
-            class Counter implements Printable {
-                var value: Int;
+            class Counter(start: Int) implements Printable {
+                var value: Int = start;
                 fn increment() -> Int {
                     self.value = self.value + 1;
                     return self.value;
@@ -485,7 +488,7 @@ public sealed class VelaBackendTests
     public async Task CompileDeferSnapshotsArgumentsAndExecutesInLastInFirstOutOrder()
     {
         var compilation = Compile("""
-            fn mark(value: Int) -> Unit {
+            fn mark(value: Int) -> Void {
                 print(value);
             }
 
@@ -522,7 +525,7 @@ public sealed class VelaBackendTests
     public async Task CompileDeferRunsOnContinueAndBreakAtEachLexicalScopeExit()
     {
         var compilation = Compile("""
-            fn mark(value: Int) -> Unit {
+            fn mark(value: Int) -> Void {
                 print(value);
             }
 
@@ -699,7 +702,7 @@ public sealed class VelaBackendTests
                 async fn next() -> Int;
             }
 
-            class Counter implements CounterSource {
+            class Counter() implements CounterSource {
                 async fn next() -> Int {
                     return 7;
                 }
@@ -758,6 +761,74 @@ public sealed class VelaBackendTests
         Assert.False(compilation.HasErrors);
         Assert.Contains("VelaJson.Compact", compilation.GeneratedSource, StringComparison.Ordinal);
         Assert.DoesNotContain("JsonDocument", compilation.GeneratedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CompileCliAndLoggingPackagesHandlesDefaultsAliasesSubcommandsAndErrors()
+    {
+        var root = FindRepositoryRoot();
+        var documents = CliLogPackageNames
+            .Select(package => new VelaSourceDocument(
+                new SourceText(File.ReadAllText(Path.Combine(root, "packages", package, "src", "lib.vela")), Path.Combine(root, "packages", package, "src", "lib.vela")),
+                package))
+            .Append(new VelaSourceDocument(new SourceText("""
+                include vela.std.cli as cli;
+                include vela.std.log as log;
+
+                fn main() -> Int {
+                    let root = cli.command("tool", "integration test", "0.2.0");
+                    root.option("--name", "Name", default_value: "Vela", alias: "-n");
+                    root.flag("--json", "JSON mode");
+                    let serve = cli.command("serve", "serve command");
+                    serve.option("--port", "Port", default_value: "8080");
+                    root.subcommand(serve);
+
+                    let parsed = root.parse();
+                    if parsed.is_error { print(parsed.error); return 2; }
+                    print(parsed.command);
+                    if parsed.command == "serve" {
+                        print(parsed.require_int("--port"));
+                        return 0;
+                    }
+
+                    print(parsed.require_text("--name"));
+                    print(parsed.require_bool("--json"));
+                    log.logger("test", json: true, color: false).with_field("name", parsed.require_text("--name")).info("parsed");
+                    return 0;
+                }
+                """, "cli-log-integration.vela")))
+            .ToArray();
+        var compilation = VelaCompiler.Compile(documents);
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static diagnostic => diagnostic.Message)));
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("CliLogIntegration", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+
+            var defaults = await VelaBuildService.RunGeneratedProjectAsync(project);
+            var aliases = await VelaBuildService.RunGeneratedProjectAsync(project, ["-n", "Ada", "--json"]);
+            var subcommand = await VelaBuildService.RunGeneratedProjectAsync(project, ["serve", "--port", "9090"]);
+            var invalid = await VelaBuildService.RunGeneratedProjectAsync(project, ["--unknown"]);
+
+            Assert.Equal(0, defaults.ExitCode);
+            Assert.Contains("Vela", defaults.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("\"message\":\"parsed\"", defaults.StandardOutput, StringComparison.Ordinal);
+            Assert.Equal(0, aliases.ExitCode);
+            Assert.Contains("Ada", aliases.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("True", aliases.StandardOutput, StringComparison.Ordinal);
+            Assert.Equal(0, subcommand.ExitCode);
+            Assert.Contains("serve", subcommand.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("9090", subcommand.StandardOutput, StringComparison.Ordinal);
+            Assert.Equal(2, invalid.ExitCode);
+            Assert.Contains("Unknown option: --unknown", invalid.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
     }
 
     [Fact]
@@ -826,6 +897,257 @@ public sealed class VelaBackendTests
 
         Assert.True(compilation.HasErrors);
         Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VEL3018" && diagnostic.Message.Contains("unreachable", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CompileProductivityFeaturesRunsWithVoidEntryPoint()
+    {
+        var compilation = Compile("""
+            include vela.core;
+
+            interface Named {
+                fn name() -> Text;
+            }
+
+            interface Resettable {
+                fn reset() -> Void;
+            }
+
+            @since("0.2.0")
+            class Worker(worker_name: Text, initial: Int = 2) implements Named, Resettable {
+                var value: Int = initial;
+                fn name() -> Text { return worker_name; }
+                fn reset() -> Void { self.value = 0; }
+            }
+
+            record PairData {
+                left: Int;
+                right: Int;
+            }
+
+            fn calculate(base: Int, step: Int = base + 1, times: Int = 2) -> Int {
+                return base + step * times;
+            }
+
+            fn main() -> Void {
+                let worker = Worker(initial: 3, worker_name: "vela");
+                print(worker.name());
+                print(calculate(4, times: 3));
+                let (host, port) = ("localhost", 8080);
+                print(host);
+                print(port);
+                let pair = PairData(7, 8);
+                let PairData { left, right } = pair;
+                print(left + right);
+                let optional = try_unbox<Int>(5);
+                match optional {
+                    case Some(value) { print(value); }
+                    case None { print("none"); }
+                }
+                worker.reset();
+            }
+            """, "productivity.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static diagnostic => diagnostic.Message)));
+        Assert.Contains("private readonly string __velaCtor_worker_name", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("initial: 3", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("__velaMatch", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("Productivity", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("vela", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("19", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("localhost", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("15", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task CompileAlgebraicFactoriesAndExhaustiveMatchRuns()
+    {
+        var compilation = Compile("""
+            include vela.core;
+
+            fn main() -> Int {
+                let optional = some<Int>(21);
+                match optional {
+                    case Some(value) { print(value); }
+                    case None { return 10; }
+                }
+
+                let outcome = ok<Int, Text>(42);
+                match outcome {
+                    case Ok(value) { print(value); }
+                    case Err(error) { print(error); return 20; }
+                }
+                return 0;
+            }
+            """, "algebraic-factories.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static diagnostic => diagnostic.Message)));
+        Assert.Contains("Option.Some<int>(21)", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("Result.Ok<int, string>(42)", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("AlgebraicFactories", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("21", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("42", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public void CompileAttributeUsesReportsNonBlockingWarnings()
+    {
+        var compilation = Compile("""
+            @deprecated("Use current instead.")
+            fn legacy() -> Void { }
+
+            @experimental
+            class Preview() {
+                @deprecated("Use run instead.")
+                fn execute() -> Void { }
+            }
+
+            fn main() -> Void {
+                legacy();
+                let preview = Preview();
+                preview.execute();
+            }
+            """, "attribute-warnings.vela");
+
+        Assert.False(compilation.HasErrors);
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VELW002" && diagnostic.Severity == DiagnosticSeverity.Warning && diagnostic.Message.Contains("Use current", StringComparison.Ordinal));
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VELW003" && diagnostic.Severity == DiagnosticSeverity.Warning && diagnostic.Message.Contains("Preview", StringComparison.Ordinal));
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VELW002" && diagnostic.Message.Contains("Preview.execute", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task CompileDefaultReferencingEarlierParameterEvaluatesArgumentOnce()
+    {
+        var compilation = Compile("""
+            class Probe() {
+                var calls: Int = 0;
+
+                fn next() -> Int {
+                    self.calls = self.calls + 1;
+                    return self.calls;
+                }
+            }
+
+            fn total(base: Int, extra: Int = base + 1) -> Int {
+                return base + extra;
+            }
+
+            fn main() -> Int {
+                let probe = Probe();
+                print(total(probe.next()));
+                print(probe.calls);
+                if probe.calls == 1 { return 0; }
+                return 9;
+            }
+            """, "default-evaluation.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static diagnostic => diagnostic.Message)));
+        Assert.Contains("__velaCallArg", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("DefaultEvaluation", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("3", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("1", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task RunGeneratedProjectForwardsOnlyExplicitProgramArguments()
+    {
+        var compilation = Compile("""
+            include vela.core.env as env;
+
+            fn main() -> Int {
+                print(env.argument_count());
+                if env.argument_count() > 0 {
+                    let first = env.argument(0);
+                    if first.has_value { print(first.value); }
+                }
+                return 0;
+            }
+            """, "program-arguments.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static diagnostic => diagnostic.Message)));
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("ProgramArguments", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+
+            var withoutArguments = await VelaBuildService.RunGeneratedProjectAsync(project);
+            var withArguments = await VelaBuildService.RunGeneratedProjectAsync(project, ["--name", "Vela"]);
+
+            Assert.Equal(0, withoutArguments.ExitCode);
+            Assert.Equal("0", withoutArguments.StandardOutput.Trim());
+            Assert.Equal(0, withArguments.ExitCode);
+            Assert.Contains("2", withArguments.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("--name", withArguments.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Theory]
+    [InlineData("fn main() -> Void { return 1; }", "VEL3020")]
+    [InlineData("fn bad(value: Void) -> Void { }", "VEL3020")]
+    [InlineData("class Missing() { value: Int; }", "VEL3021")]
+    [InlineData("interface A { fn run() -> Void; } class B() implements A, A { fn run() -> Void { } }", "VEL3022")]
+    [InlineData("fn add(value: Int) -> Int { return value; } fn main() -> Int { return add(other: 1); }", "VEL3023")]
+    [InlineData("enum State { Ready, Running } fn main() -> Int { let state = State.Ready; match state { case State.Ready { return 0; } } }", "VEL3024")]
+    [InlineData("record Pair { left: Int; right: Int; } fn main() -> Int { let pair = Pair(1, 2); let Pair { left } = pair; return left; }", "VEL3025")]
+    [InlineData("@unknown\nfn main() -> Void { }", "VEL3026")]
+    public void CompileInvalidProductivityRuleReportsStructuredDiagnostic(string code, string expectedCode)
+    {
+        var compilation = Compile(code, "invalid-productivity.vela");
+
+        var matchingDiagnostics = compilation.Diagnostics.Where(item => item.Code == expectedCode).ToArray();
+        Assert.NotEmpty(matchingDiagnostics);
+        var diagnostic = matchingDiagnostics[0];
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
+        Assert.True(diagnostic.Span.Length > 0);
+        Assert.False(string.IsNullOrWhiteSpace(diagnostic.Help));
     }
 
     private static VelaCompilation Compile(string code, string filePath) =>
