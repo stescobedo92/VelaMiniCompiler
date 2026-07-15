@@ -10,25 +10,22 @@ param(
     [Parameter(Mandatory)]
     [string]$OutputDirectory,
 
-    [string]$WixBin = "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin"
+    [string]$WixBin
 )
 
 $ErrorActionPreference = 'Stop'
 
+$scriptDirectory = Split-Path -Parent $PSCommandPath
+. (Join-Path $scriptDirectory 'resolve-wix.ps1')
+$WixBin = Resolve-WixToolsetBin -RequestedPath $WixBin -RequiredTools @('candle.exe', 'light.exe', 'heat.exe')
 $candle = Join-Path $WixBin 'candle.exe'
 $light = Join-Path $WixBin 'light.exe'
 $heat = Join-Path $WixBin 'heat.exe'
-foreach ($tool in @($candle, $light, $heat)) {
-    if (-not (Test-Path -LiteralPath $tool)) {
-        throw "WiX Toolset 3.11 was not found at '$WixBin'."
-    }
-}
 
 $sourceDirectory = (Resolve-Path -LiteralPath $PublishDirectory).Path
 $outputPath = [System.IO.Path]::GetFullPath($OutputDirectory)
 [System.IO.Directory]::CreateDirectory($outputPath) | Out-Null
 
-$scriptDirectory = Split-Path -Parent $PSCommandPath
 $wixSource = Join-Path $scriptDirectory 'vela.wxs'
 $wixObject = Join-Path $outputPath 'vela.wixobj'
 $runtimeWixSource = Join-Path $outputPath 'vela-runtime.wxs'
