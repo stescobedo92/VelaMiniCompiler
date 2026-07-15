@@ -173,7 +173,7 @@ jobs:
 
       - name: Install WiX Toolset
         shell: pwsh
-        run: choco install wixtoolset --version=3.11.2 --yes --no-progress
+        run: choco install wixtoolset --version=3.14.1.20250415 --allow-downgrade --yes --no-progress
 
       - name: Build MSI package
         shell: pwsh
