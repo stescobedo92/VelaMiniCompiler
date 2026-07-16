@@ -1,24 +1,28 @@
 # Releasing and installing Vela
 
-The repository includes two GitHub Actions workflows:
+The repository includes four GitHub Actions workflows:
 
 - `Continuous Integration` builds and tests Windows, Linux, and macOS for every
   pull request and push to the primary branches.
+- `Documentation` builds the DocFX site and deploys GitHub Pages.
+- `Package smoke tests` builds and exercises unsigned installers on every
+  supported platform.
 - `Release compiler` produces Native AOT compiler binaries and installation
   artifacts when a version tag such as `v0.2.0` is pushed.
 
-A tag-triggered release is always signed. It fails closed if a credential is
-missing; it never silently publishes an unsigned production package. A manually
-dispatched run can produce unsigned artifacts for packaging tests, but cannot
-create a GitHub Release unless signing is enabled.
+A tag-triggered release always publishes the generated artifacts. It signs them
+when every platform credential is available; otherwise the workflow emits an
+explicit warning and publishes unsigned artifacts with checksums and GitHub
+provenance attestations. A manual run with `sign=true` still fails closed if any
+required credential is missing.
 
 ## Release artifacts
 
 | Platform | Architectures | Artifacts | Global command |
 | --- | --- | --- | --- |
-| Windows | x64 | standalone `.exe`, portable `.zip`, `.msi`, graphical `-setup.exe` | machine `PATH` points to `C:\Program Files\Vela` |
-| macOS | Apple Silicon, Intel | standalone executable, portable `.tar.gz`, signed/notarized `.pkg` and `.dmg` | `/usr/local/bin/vela` symlink |
-| Linux | x64 | standalone executable, portable `.tar.gz`, `.deb`, `.rpm`, GPG signatures | `/usr/local/bin/vela` symlink |
+| Windows | x64 | standalone `.exe`, portable `.zip`, `.msi`, graphical `-setup.exe`; signed when credentials are configured | machine `PATH` points to `C:\Program Files\Vela` |
+| macOS | Apple Silicon, Intel | standalone executable, portable `.tar.gz`, `.pkg`, `.dmg`; signed and notarized when credentials are configured | `/usr/local/bin/vela` symlink |
+| Linux | x64 | standalone executable, portable `.tar.gz`, `.deb`, `.rpm`; GPG signatures when credentials are configured | `/usr/local/bin/vela` symlink |
 
 The Windows setup executable is a WiX Burn graphical wizard. It installs the
 MSI per-machine, requests elevation, supports repair/uninstall, and updates the
@@ -32,8 +36,8 @@ repository. The bare standalone binary is supplied for inspection, while the
 portable archive is the complete relocatable distribution.
 
 Every platform job creates a GitHub provenance attestation for the standalone
-compiler. Release assets include `SHA256SUMS`; Linux also publishes detached
-signatures and `vela-linux-signing-key.asc`.
+compiler. Release assets always include `SHA256SUMS`; when signing is enabled,
+Linux also publishes detached signatures and `vela-linux-signing-key.asc`.
 
 ## Configure signing
 
@@ -59,23 +63,26 @@ exports its public key to the release. Signing secrets are never available to
 pull-request workflows.
 
 Before any platform publish starts, `Validate signing credentials` reports the
-exact missing secret names and fails closed. `LINUX_GPG_PASSPHRASE` remains
-optional; every other secret in the table is required for a signed tag.
+exact missing secret names. A tag-triggered run continues unsigned when secrets
+are incomplete and adds a warning to the GitHub Release. A manual run requesting
+`sign=true` fails closed instead. `LINUX_GPG_PASSPHRASE` remains optional; every
+other secret in the table is required for signed artifacts.
 
 ## Create a release
 
-After configuring the credentials:
+Create and push an annotated semantic-version tag:
 
 ```powershell
-git checkout main
+git checkout master
 git pull --ff-only
-git tag v0.2.0
+git tag -a v0.2.0 -m "Vela v0.2.0"
 git push origin v0.2.0
 ```
 
-The tag runs signing, packaging, provenance attestation, checksum generation,
-and GitHub release creation. Tags must use exactly `vX.Y.Z`, because MSI
-versions require numeric three-part versions.
+The tag runs packaging, provenance attestation, checksum generation, and GitHub
+release creation. Signing and notarization are also performed when all required
+credentials are configured. Tags must use exactly `vX.Y.Z`, because MSI versions
+require numeric three-part versions.
 
 For a quick unsigned packaging validation, run **Package smoke tests**; it builds
 and extracts every installer format and invokes the compiler from the installed

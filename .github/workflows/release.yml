@@ -80,11 +80,13 @@ jobs:
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
 
-  signing-preflight:
+  signing_preflight:
     name: Validate signing credentials
     needs: prepare
     runs-on: ubuntu-24.04
     environment: release
+    outputs:
+      sign: ${{ steps.signing.outputs.sign }}
     env:
       WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
@@ -100,11 +102,21 @@ jobs:
       LINUX_GPG_PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
       LINUX_GPG_KEY_ID: ${{ secrets.LINUX_GPG_KEY_ID }}
     steps:
-      - name: Require every production signing secret
-        if: needs.prepare.outputs.sign == 'true'
+      - id: signing
+        name: Resolve release signing mode
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SIGN_REQUESTED: ${{ needs.prepare.outputs.sign }}
         run: |
           set -euo pipefail
+
+          if [[ "$SIGN_REQUESTED" != "true" ]]; then
+            echo 'Signing was not requested.'
+            echo 'sign=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           required=(
             WINDOWS_CERTIFICATE_PFX_BASE64
             WINDOWS_CERTIFICATE_PASSWORD
@@ -126,15 +138,21 @@ jobs:
           done
           if (( ${#missing[@]} > 0 )); then
             printf 'Missing required release environment secret: %s\n' "${missing[@]}" >&2
+            if [[ "$EVENT_NAME" == "push" ]]; then
+              echo '::warning title=Unsigned release::Signing credentials are incomplete. The tag release will continue without platform code signatures.'
+              echo 'sign=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             exit 1
           fi
           echo 'All required signing credentials are configured.'
+          echo 'sign=true' >> "$GITHUB_OUTPUT"
 
   windows:
     name: Windows x64
     needs:
       - prepare
-      - signing-preflight
+      - signing_preflight
     runs-on: windows-2025
     environment: release
     permissions:
@@ -167,7 +185,7 @@ jobs:
         run: .\eng\release\stage-runtime.ps1 -PublishDirectory $env:PUBLISH
 
       - name: Sign compiler binary
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: pwsh
         run: .\eng\release\windows\sign.ps1 -Paths "$env:PUBLISH\vela.exe"
 
@@ -180,7 +198,7 @@ jobs:
         run: .\eng\release\windows\build-msi.ps1 -Version $env:VERSION -PublishDirectory $env:PUBLISH -OutputDirectory $env:DIST
 
       - name: Sign MSI package
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: pwsh
         run: .\eng\release\windows\sign.ps1 -Paths "$env:DIST\vela-$env:VERSION-win-x64.msi"
 
@@ -189,7 +207,7 @@ jobs:
         run: .\eng\release\windows\build-bundle.ps1 -Version $env:VERSION -MsiPath "$env:DIST\vela-$env:VERSION-win-x64.msi" -OutputDirectory $env:DIST
 
       - name: Sign setup wizard
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: pwsh
         run: .\eng\release\windows\sign.ps1 -Paths "$env:DIST\vela-$env:VERSION-win-x64-setup.exe"
 
@@ -216,7 +234,7 @@ jobs:
     name: macOS ${{ matrix.architecture }}
     needs:
       - prepare
-      - signing-preflight
+      - signing_preflight
     runs-on: ${{ matrix.runner }}
     environment: release
     permissions:
@@ -274,12 +292,12 @@ jobs:
         run: pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory "$PUBLISH"
 
       - name: Import signing certificates
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: ./eng/release/macos/prepare-signing.sh
 
       - name: Sign compiler binary
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: ./eng/release/macos/sign-binary.sh "$PUBLISH/vela"
 
@@ -288,12 +306,12 @@ jobs:
         run: ./eng/release/macos/build-package.sh "$VERSION" "${{ matrix.architecture }}" "$PUBLISH" "$DIST"
 
       - name: Sign PKG installer
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: ./eng/release/macos/sign-package.sh "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}.pkg"
 
       - name: Notarize PKG installer
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: ./eng/release/macos/notarize.sh "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}.pkg"
 
@@ -302,7 +320,7 @@ jobs:
         run: ./eng/release/macos/build-dmg.sh "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}.pkg" "$DIST"
 
       - name: Sign and notarize DMG installer image
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: |
           ./eng/release/macos/sign-dmg.sh "$DIST/vela-$VERSION-macos-${{ matrix.architecture }}.dmg"
@@ -331,6 +349,7 @@ jobs:
     name: Publish GitHub Release
     needs:
       - prepare
+      - signing_preflight
       - windows
       - macos
       - linux
@@ -343,6 +362,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
       TAG: ${{ needs.prepare.outputs.tag }}
+      SIGNED: ${{ needs.signing_preflight.outputs.sign }}
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -360,16 +380,24 @@ jobs:
       - name: Create GitHub Release
         shell: bash
         run: |
+          release_args=()
+          if [[ "$SIGNED" != "true" ]]; then
+            warning='> [!WARNING]
+          > These artifacts do not have platform code signatures. Verify `SHA256SUMS` and the GitHub provenance attestations before use.'
+            release_args+=(--notes "$warning")
+          fi
+
           gh release create "$TAG" release/* \
             --verify-tag \
             --title "Vela $VERSION" \
-            --generate-notes
+            --generate-notes \
+            "${release_args[@]}"
 
   linux:
     name: Linux x64
     needs:
       - prepare
-      - signing-preflight
+      - signing_preflight
     runs-on: ubuntu-24.04
     environment: release
     permissions:
@@ -428,7 +456,7 @@ jobs:
           echo "DIRECT_ARTIFACT=$DIST/vela-$VERSION-linux-x64" >> "$GITHUB_ENV"
 
       - name: Sign Linux artifacts
-        if: needs.prepare.outputs.sign == 'true'
+        if: needs.signing_preflight.outputs.sign == 'true'
         shell: bash
         run: ./eng/release/linux/sign-artifacts.sh "$DIRECT_ARTIFACT" "$DIST/vela_${VERSION}_amd64.deb" "$DIST/vela-$VERSION-1.x86_64.rpm" "$DIST/vela-$VERSION-linux-x64.tar.gz"
 
