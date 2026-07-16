@@ -30,6 +30,7 @@ coverage.xml
 
 # Local tooling and operating-system files
 .dotnet/
+.worktrees/
 .DS_Store
 Thumbs.db
 *.swp
