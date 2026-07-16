@@ -100,13 +100,15 @@ dotnet test Vela.slnx
 
 ## Install a release
 
-GitHub releases publish signed Native AOT compiler artifacts for Windows x64,
-macOS (Apple Silicon and Intel), and Linux x64. Windows offers both an MSI and
-a normal graphical setup wizard; macOS offers PKG and DMG; Linux offers DEB and
-RPM packages. Each installer makes `vela` available globally after installation.
-Portable ZIP/TAR archives include the adjacent runtime support project required
-by `vela run` and `vela build`; use those instead of copying the bare executable
-alone.
+GitHub releases publish Native AOT compiler artifacts for Windows x64, macOS
+(Apple Silicon and Intel), and Linux x64. Artifacts receive platform signatures
+when release credentials are configured; unsigned releases carry an explicit
+warning and still include checksums and GitHub provenance attestations. Windows
+offers both an MSI and a normal graphical setup wizard; macOS offers PKG and
+DMG; Linux offers DEB and RPM packages. Each installer makes `vela` available
+globally after installation. Portable ZIP/TAR archives include the adjacent
+runtime support project required by `vela run` and `vela build`; use those
+instead of copying the bare executable alone.
 
 For release signing, verification, CI behavior, and exact install commands, see
 [the release and installation guide](docs/releasing.md).

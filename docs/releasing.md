@@ -156,27 +156,31 @@ Check hashes:
 sha256sum --check SHA256SUMS
 ```
 
-Verify Windows Authenticode:
+Every release can be verified with `SHA256SUMS` and GitHub provenance
+attestations. When the release page identifies the artifacts as signed, verify
+the platform signatures as well. For Windows Authenticode:
 
 ```powershell
 (Get-AuthenticodeSignature .\vela-0.2.0-win-x64-setup.exe).Status
 ```
 
-The expected status is `Valid`. Verify macOS:
+The expected status for a signed artifact is `Valid`. For signed macOS
+artifacts:
 
 ```bash
 pkgutil --check-signature vela-0.2.0-macos-arm64.pkg
 spctl --assess --type install --verbose=4 vela-0.2.0-macos-arm64.pkg
 ```
 
-Verify a Linux signature:
+For a signed Linux release:
 
 ```bash
 gpg --import vela-linux-signing-key.asc
 gpg --verify vela_0.2.0_amd64.deb.asc vela_0.2.0_amd64.deb
 ```
 
-Finally, verify GitHub provenance for the standalone compiler:
+Verify GitHub provenance for the standalone compiler regardless of signing
+mode:
 
 ```bash
 gh attestation verify ./vela-0.2.0-linux-x64 --repo OWNER/REPOSITORY
