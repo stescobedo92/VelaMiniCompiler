@@ -391,6 +391,7 @@ jobs:
             --verify-tag \
             --title "Vela $VERSION" \
             --generate-notes \
+            --repo "$GITHUB_REPOSITORY" \
             "${release_args[@]}"
 
   linux:
