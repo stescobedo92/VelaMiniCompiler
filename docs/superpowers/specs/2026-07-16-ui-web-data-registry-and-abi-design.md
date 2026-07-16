@@ -2,8 +2,9 @@
 
 ## Status
 
-The conversational design is approved. This written specification is awaiting
-final user review. Implementation has not started.
+Approved for implementation on 2026-07-16. The implementation is decomposed
+into dependency-ordered plans under `docs/superpowers/plans`. Feature code has
+not started.
 
 ## Purpose
 
