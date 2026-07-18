@@ -24,6 +24,20 @@ public sealed record TupleTypeSyntax(
     public override TextSpan Span => TextSpan.FromBounds(LeftParenthesis.Span.Start, RightParenthesis.Span.End);
 }
 
+/// <summary>Represents a typed function value such as <c>Fn&lt;(Text), Void&gt;</c>.</summary>
+public sealed record FunctionTypeSyntax(
+    SyntaxToken FnKeyword,
+    SyntaxToken LessToken,
+    SyntaxToken LeftParenthesis,
+    IReadOnlyList<TypeSyntax> ParameterTypes,
+    SyntaxToken RightParenthesis,
+    SyntaxToken Comma,
+    TypeSyntax ReturnType,
+    SyntaxToken GreaterToken) : TypeSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(FnKeyword.Span.Start, GreaterToken.Span.End);
+}
+
 public sealed record GenericParameterSyntax(
     SyntaxToken Identifier,
     SyntaxToken? ColonToken,

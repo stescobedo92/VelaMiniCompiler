@@ -1,0 +1,92 @@
+# Full GUI studio demo: layouts, menus, file dialogs, list/grid, typed callbacks.
+# Cross-platform via Avalonia (Windows/macOS/Linux).
+#
+#   vela run examples/ui-studio.vela
+#   $env:VELA_UI_HEADLESS='1'; vela run examples/ui-studio.vela
+
+include vela.core;
+include vela.core.text as text;
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let form = gui.create_form_layout("Vela Studio", 640, 520, "column");
+    let title = gui.add_label(form, "Studio", 0, 0);
+    let name_box = gui.add_textbox(form, "Ada", 0, 0, 240, 28);
+    let live = gui.add_label(form, "Typing: Ada", 0, 0);
+    let loud = gui.add_checkbox(form, "Loud mode", 0, 0);
+    let theme = gui.add_combo(form, 0, 0, 200, 28);
+    gui.combo_add(theme, "Light");
+    gui.combo_add(theme, "Dark");
+    gui.combo_add(theme, "System");
+
+    let items = gui.add_list(form, 0, 0, 300, 120);
+    gui.list_add(items, "Task A");
+    gui.list_add(items, "Task B");
+    let table = gui.add_grid(form, 0, 0, 400, 120);
+    gui.grid_add_row(table, "id=1;name=Ada");
+    gui.grid_add_row(table, "id=2;name=Grace");
+
+    let add_item = gui.add_button(form, "Add list item", 0, 0, 140, 32);
+    let greet = gui.add_button(form, "Greet", 0, 0, 100, 32);
+    let progress = gui.add_progress(form, 0, 0, 400, 18);
+    let status = gui.add_label(form, "Ready.", 0, 0);
+
+    var count: Int = 0;
+
+    gui.on_text_changed(name_box, fn(value: Text) -> Void {
+        gui.set_text(live, "Typing: " + value);
+    });
+
+    gui.on_checked_changed(loud, fn(value: Bool) -> Void {
+        if value {
+            gui.set_text(status, "Loud mode enabled.");
+        }
+        if value == false {
+            gui.set_text(status, "Loud mode disabled.");
+        }
+    });
+
+    gui.on_click(add_item, fn() -> Void {
+        count = count + 1;
+        gui.list_add(items, "Task " + text.from_int(count));
+        gui.grid_add_row(table, "id=" + text.from_int(count) + ";name=" + gui.get_text(name_box));
+        gui.set_progress(progress, count * 10);
+        gui.set_text(status, "Added item.");
+    });
+
+    gui.on_click(greet, fn() -> Void {
+        let name = gui.get_text(name_box);
+        let selected = gui.list_selected(items);
+        var message: Text = "Hello, " + name + " [" + gui.combo_selected(theme) + "]";
+        if selected != "" {
+            message = message + " selected=" + selected;
+        }
+        if gui.is_checked(loud) {
+            message = message + "!";
+        }
+        gui.show_message("Greeting", message);
+    });
+
+    gui.add_menu_item(form, "File/Open...", fn() -> Void {
+        let path = gui.open_file(form, "Open a file");
+        if path != "" {
+            gui.set_text(status, "Opened: " + path);
+            gui.list_add(items, path);
+        }
+    });
+
+    gui.add_menu_item(form, "File/Save As...", fn() -> Void {
+        let path = gui.save_file(form, "Save a file", "notes.txt");
+        if path != "" {
+            gui.set_text(status, "Save path: " + path);
+        }
+    });
+
+    gui.add_menu_item(form, "File/Exit", fn() -> Void {
+        gui.close(form);
+    });
+
+    gui.set_text(title, "Vela Studio");
+    gui.set_checked(loud, true);
+    return gui.run(form);
+}

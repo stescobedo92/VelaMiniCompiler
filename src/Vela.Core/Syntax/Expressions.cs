@@ -110,3 +110,16 @@ public sealed record ListExpressionSyntax(
 {
     public override TextSpan Span => TextSpan.FromBounds(LeftBracket.Span.Start, RightBracket.Span.End);
 }
+
+/// <summary>Represents an anonymous function value such as <c>fn() -&gt; Void { ... }</c>.</summary>
+public sealed record LambdaExpressionSyntax(
+    SyntaxToken FnKeyword,
+    SyntaxToken LeftParenthesis,
+    IReadOnlyList<ParameterSyntax> Parameters,
+    SyntaxToken RightParenthesis,
+    SyntaxToken Arrow,
+    TypeSyntax ReturnType,
+    BlockSyntax Body) : ExpressionSyntax
+{
+    public override TextSpan Span => TextSpan.FromBounds(FnKeyword.Span.Start, Body.Span.End);
+}

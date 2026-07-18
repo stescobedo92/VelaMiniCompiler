@@ -1,0 +1,86 @@
+# Compose a desktop UI from Vela components (Windows).
+# Prefer examples/ui-onclick.vela for typed on_click lambdas.
+# This file keeps the polling loop (was_clicked) as an alternative style.
+#
+#   vela run examples/ui-components.vela
+
+include vela.core;
+include vela.core.text as text;
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let main_window = gui.create_form("Vela Workshop", 520, 320);
+    let counter_label = gui.add_label(main_window, "Count: 0", 20, 56);
+    let name_box = gui.add_textbox(main_window, "Ada", 20, 100, 200, 28);
+    let plus = gui.add_button(main_window, "+1", 20, 150, 90, 34);
+    let minus = gui.add_button(main_window, "-1", 120, 150, 90, 34);
+    let reset = gui.add_button(main_window, "Reset", 220, 150, 90, 34);
+    let open_details = gui.add_button(main_window, "Open details", 20, 200, 130, 34);
+    let greet = gui.add_button(main_window, "Greet", 160, 200, 90, 34);
+    let status = gui.add_label(main_window, "Ready.", 20, 260);
+
+    let details = gui.create_form("Details", 340, 180);
+    let details_label = gui.add_label(details, "Mirrored count: 0", 20, 24);
+    let details_close = gui.add_button(details, "Close details", 20, 80, 140, 34);
+
+    var count: Int = 0;
+    var details_open: Bool = false;
+
+    gui.show(main_window);
+
+    while gui.is_open(main_window) {
+        gui.process_events(main_window);
+        if details_open {
+            gui.process_events(details);
+        }
+
+        if gui.was_clicked(plus) {
+            count = count + 1;
+            gui.set_text(counter_label, "Count: " + text.from_int(count));
+            gui.set_text(details_label, "Mirrored count: " + text.from_int(count));
+            gui.set_text(status, "Incremented.");
+        }
+
+        if gui.was_clicked(minus) {
+            count = count - 1;
+            gui.set_text(counter_label, "Count: " + text.from_int(count));
+            gui.set_text(details_label, "Mirrored count: " + text.from_int(count));
+            gui.set_text(status, "Decremented.");
+        }
+
+        if gui.was_clicked(reset) {
+            count = 0;
+            gui.set_text(counter_label, "Count: 0");
+            gui.set_text(details_label, "Mirrored count: 0");
+            gui.set_text(status, "Reset.");
+        }
+
+        if gui.was_clicked(greet) {
+            let name = gui.get_text(name_box);
+            gui.show_message("Greeting", "Hello, " + name + "!");
+            gui.set_text(status, "Greeted " + name + ".");
+        }
+
+        if gui.was_clicked(open_details) {
+            if details_open == false {
+                gui.show_owned(details, main_window);
+                details_open = true;
+            }
+            gui.set_text(status, "Details window is open.");
+        }
+
+        if details_open {
+            if gui.was_clicked(details_close) {
+                gui.close(details);
+                details_open = false;
+                gui.set_text(status, "Closed details window.");
+            }
+            if gui.is_open(details) == false {
+                details_open = false;
+            }
+        }
+    }
+
+    print("Workshop closed. Final count: " + text.from_int(count));
+    return 0;
+}

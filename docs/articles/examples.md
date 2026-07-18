@@ -21,6 +21,16 @@ dotnet run --project src/Vela.Cli -- run examples/void-functions.vela
 | `attributes.vela` | Version, experimental, deprecated, and hidden metadata. |
 | `system-exec.vela` | Cross-platform direct process execution with bounds. |
 | `io-workspace.vela` | Temporary workspace, deterministic files, and cleanup. |
+| `ui-hello-form.vela` | Windows Hello Form (`vela.core.gui`); use `VELA_UI_HEADLESS=1` in CI. |
+| `ui-counter-desk.vela` | Two windows, counter, and several buttons (`run_counter_app`). |
+| `ui-components.vela` | Compose forms/buttons/labels/textboxes and poll clicks. |
+| `ui-onclick.vela` | Typed `on_click(fn() -> Void { ... })`, checkbox, combo, progress. |
+| `ui-studio.vela` | Layouts, menus, file dialogs, list/grid, `on_text_changed`. |
+| `ui-rich-controls.vela` | Textarea, slider, numeric, radio, separator, `on_value_changed`. |
+| `gui-prompt.vela` | Message box and prompt dialogs on Windows. |
+| `api-rest.vela` | REST server (`vela.core.http`) with GET/POST loopback. |
+| `api-graphql.vela` | Minimal GraphQL mount on HTTP. |
+| `api-grpc.vela` | Unary gRPC map + client call. |
 
 Package applications:
 

@@ -7,15 +7,49 @@ namespace Vela.Backend;
 public sealed class VelaBuildService
 {
     private readonly string _runtimeProjectPath;
+    private readonly string? _uiRuntimeProjectPath;
+    private readonly string? _httpRuntimeProjectPath;
+    private readonly string? _grpcRuntimeProjectPath;
     private readonly string? _globalJsonPath;
 
-    public VelaBuildService(string runtimeProjectPath)
+    public VelaBuildService(
+        string runtimeProjectPath,
+        string? uiRuntimeProjectPath = null,
+        string? httpRuntimeProjectPath = null,
+        string? grpcRuntimeProjectPath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeProjectPath);
         _runtimeProjectPath = Path.GetFullPath(runtimeProjectPath);
         if (!File.Exists(_runtimeProjectPath))
         {
             throw new FileNotFoundException("The Vela runtime project was not found.", _runtimeProjectPath);
+        }
+
+        if (uiRuntimeProjectPath is not null)
+        {
+            _uiRuntimeProjectPath = Path.GetFullPath(uiRuntimeProjectPath);
+            if (!File.Exists(_uiRuntimeProjectPath))
+            {
+                throw new FileNotFoundException("The Vela UI runtime project was not found.", _uiRuntimeProjectPath);
+            }
+        }
+
+        if (httpRuntimeProjectPath is not null)
+        {
+            _httpRuntimeProjectPath = Path.GetFullPath(httpRuntimeProjectPath);
+            if (!File.Exists(_httpRuntimeProjectPath))
+            {
+                throw new FileNotFoundException("The Vela HTTP runtime project was not found.", _httpRuntimeProjectPath);
+            }
+        }
+
+        if (grpcRuntimeProjectPath is not null)
+        {
+            _grpcRuntimeProjectPath = Path.GetFullPath(grpcRuntimeProjectPath);
+            if (!File.Exists(_grpcRuntimeProjectPath))
+            {
+                throw new FileNotFoundException("The Vela gRPC runtime project was not found.", _grpcRuntimeProjectPath);
+            }
         }
 
         _globalJsonPath = FindFileInAncestors(Path.GetDirectoryName(_runtimeProjectPath)!, "global.json");
@@ -31,13 +65,16 @@ public sealed class VelaBuildService
         }
 
         var target = BuildTargetResolver.Resolve(options.RuntimeIdentifier);
+        var publishMode = compilation.RequiresFrameworkDependentPublish && options.Mode == ExecutableMode.NativeAot
+            ? ExecutableMode.FrameworkDependent
+            : options.Mode;
         var stagingDirectory = Path.Combine(Path.GetTempPath(), "vela", "publish", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(stagingDirectory);
 
         try
         {
             var layout = WriteSourceProject(compilation, options with { OutputDirectory = stagingDirectory, RuntimeIdentifier = target.RuntimeIdentifier });
-            var arguments = CreatePublishArguments(layout, target.RuntimeIdentifier, options.Mode, options.ArtifactKind);
+            var arguments = CreatePublishArguments(layout, target.RuntimeIdentifier, publishMode, options.ArtifactKind);
             var process = await RunDotnetAsync(arguments, layout.SourceDirectory, cancellationToken);
             if (process.ExitCode != 0)
             {
@@ -120,7 +157,7 @@ public sealed class VelaBuildService
         var sourcePath = Path.Combine(sourceDirectory, "Program.g.cs");
         var projectPath = Path.Combine(sourceDirectory, "Vela.Generated.csproj");
         File.WriteAllText(sourcePath, compilation.GeneratedSource);
-        File.WriteAllText(projectPath, CreateProjectFile(applicationName, options.ArtifactKind));
+        File.WriteAllText(projectPath, CreateProjectFile(applicationName, options.ArtifactKind, compilation));
         if (_globalJsonPath is not null)
         {
             File.Copy(_globalJsonPath, Path.Combine(sourceDirectory, "global.json"), overwrite: true);
@@ -212,7 +249,7 @@ public sealed class VelaBuildService
         return null;
     }
 
-    private string CreateProjectFile(string applicationName, VelaArtifactKind artifactKind)
+    private string CreateProjectFile(string applicationName, VelaArtifactKind artifactKind, VelaCompilation compilation)
     {
         var escapedRuntimePath = SecurityElement.Escape(_runtimeProjectPath) ?? throw new InvalidOperationException("Unable to escape the runtime project path.");
         var escapedApplicationName = SecurityElement.Escape(applicationName) ?? throw new InvalidOperationException("Unable to escape the application name.");
@@ -220,6 +257,61 @@ public sealed class VelaBuildService
         var nativeLibraryProperty = artifactKind == VelaArtifactKind.SharedLibrary
             ? "                   <NativeLib>Shared</NativeLib>" + Environment.NewLine
             : string.Empty;
+
+        if (compilation.RequiresFrameworkDependentPublish && artifactKind == VelaArtifactKind.SharedLibrary)
+        {
+            throw new InvalidOperationException("GUI/HTTP/gRPC applications cannot be published as shared libraries.");
+        }
+
+        var references = new List<string> { escapedRuntimePath };
+        var extraProperties = new List<string>();
+        if (compilation.RequiresGui)
+        {
+            if (_uiRuntimeProjectPath is null)
+            {
+                throw new InvalidOperationException("This program imports vela.core.gui, but the Vela UI runtime project was not located.");
+            }
+
+            references.Add(SecurityElement.Escape(_uiRuntimeProjectPath)
+                ?? throw new InvalidOperationException("Unable to escape the UI runtime project path."));
+            extraProperties.Add("<AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>");
+        }
+
+        if (compilation.RequiresHttp)
+        {
+            if (_httpRuntimeProjectPath is null)
+            {
+                throw new InvalidOperationException("This program imports vela.core.http/graphql, but the Vela HTTP runtime project was not located.");
+            }
+
+            references.Add(SecurityElement.Escape(_httpRuntimeProjectPath)
+                ?? throw new InvalidOperationException("Unable to escape the HTTP runtime project path."));
+        }
+
+        if (compilation.RequiresGrpc)
+        {
+            if (_grpcRuntimeProjectPath is null)
+            {
+                throw new InvalidOperationException("This program imports vela.core.grpc, but the Vela gRPC runtime project was not located.");
+            }
+
+            references.Add(SecurityElement.Escape(_grpcRuntimeProjectPath)
+                ?? throw new InvalidOperationException("Unable to escape the gRPC runtime project path."));
+        }
+
+        var aotCompatible = compilation.RequiresFrameworkDependentPublish ? "false" : "true";
+        var projectReferences = string.Join(
+            Environment.NewLine,
+            references.Select(path => $"                       <ProjectReference Include=\"{path}\" />"));
+        // FrameworkReference must live in ItemGroup, not PropertyGroup.
+        var frameworkRefs = compilation.RequiresHttp || compilation.RequiresGrpc
+            ? """
+                                 <FrameworkReference Include="Microsoft.AspNetCore.App" />
+               """
+            : string.Empty;
+        var propertyExtras = string.Join(
+            Environment.NewLine,
+            extraProperties.Select(static p => "                       " + p));
 
         return $"""
                <Project Sdk="Microsoft.NET.Sdk">
@@ -230,12 +322,13 @@ public sealed class VelaBuildService
                    <Nullable>enable</Nullable>
                    <ImplicitUsings>enable</ImplicitUsings>
                    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-                   <IsAotCompatible>true</IsAotCompatible>
+                   <IsAotCompatible>{aotCompatible}</IsAotCompatible>
                    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-               {nativeLibraryProperty}
+               {nativeLibraryProperty}{propertyExtras}
                  </PropertyGroup>
                  <ItemGroup>
-                   <ProjectReference Include="{escapedRuntimePath}" />
+               {projectReferences}
+               {frameworkRefs}
                  </ItemGroup>
                </Project>
                """;

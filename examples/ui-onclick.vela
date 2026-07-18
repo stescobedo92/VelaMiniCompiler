@@ -1,0 +1,66 @@
+# Typed on_click lambdas + richer components (Windows).
+#
+#   vela run examples/ui-onclick.vela
+#
+# Headless:
+#   $env:VELA_UI_HEADLESS='1'; vela run examples/ui-onclick.vela
+
+include vela.core;
+include vela.core.text as text;
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let form = gui.create_form("Vela on_click", 520, 360);
+    let counter_label = gui.add_label(form, "Count: 0", 20, 20);
+    let name_box = gui.add_textbox(form, "Ada", 20, 60, 180, 28);
+    let plus = gui.add_button(form, "+1", 20, 110, 90, 34);
+    let minus = gui.add_button(form, "-1", 120, 110, 90, 34);
+    let greet = gui.add_button(form, "Greet", 220, 110, 90, 34);
+    let close_btn = gui.add_button(form, "Close", 320, 110, 90, 34);
+
+    let loud = gui.add_checkbox(form, "Loud greeting", 20, 170);
+    let theme = gui.add_combo(form, 20, 210, 180, 28);
+    gui.combo_add(theme, "Light");
+    gui.combo_add(theme, "Dark");
+    gui.combo_add(theme, "System");
+    let progress = gui.add_progress(form, 20, 260, 460, 22);
+    let status = gui.add_label(form, "Use on_click handlers.", 20, 300);
+
+    var count: Int = 0;
+
+    gui.on_click(plus, fn() -> Void {
+        count = count + 1;
+        gui.set_text(counter_label, "Count: " + text.from_int(count));
+        gui.set_progress(progress, count * 10);
+        gui.set_text(status, "Incremented with on_click.");
+    });
+
+    gui.on_click(minus, fn() -> Void {
+        count = count - 1;
+        gui.set_text(counter_label, "Count: " + text.from_int(count));
+        if count < 0 {
+            count = 0;
+        }
+        gui.set_progress(progress, count * 10);
+        gui.set_text(status, "Decremented with on_click.");
+    });
+
+    gui.on_click(greet, fn() -> Void {
+        let name = gui.get_text(name_box);
+        let theme_name = gui.combo_selected(theme);
+        var message: Text = "Hello, " + name + " (" + theme_name + ")";
+        if gui.is_checked(loud) {
+            message = message + "!";
+        }
+        gui.show_message("Greeting", message);
+        gui.set_text(status, "Greeted via on_click.");
+    });
+
+    gui.on_click(close_btn, fn() -> Void {
+        gui.close(form);
+    });
+
+    gui.set_checked(loud, true);
+    gui.set_progress(progress, 0);
+    return gui.run(form);
+}

@@ -361,6 +361,25 @@ public sealed class VelaParserTests
         Assert.IsType<MatchStatementSyntax>(main.Body.Statements[1]);
     }
 
+    [Fact]
+    public void ParsesFunctionTypeAndParameterlessLambda()
+    {
+        const string code = """
+            fn main() -> Void {
+                let handler: Fn<(), Void> = fn() -> Void {
+                    return;
+                };
+            }
+            """;
+
+        var result = VelaParser.Parse(new SourceText(code, "callback.vela"));
+        Assert.Empty(result.Diagnostics);
+        var main = Assert.IsType<FunctionDeclarationSyntax>(Assert.Single(result.Root.Members));
+        var declaration = Assert.IsType<LetStatementSyntax>(Assert.Single(main.Body.Statements));
+        Assert.IsType<FunctionTypeSyntax>(declaration.Type);
+        Assert.IsType<LambdaExpressionSyntax>(declaration.Initializer);
+    }
+
     [Theory]
     [InlineData("class Missing { }", "P013")]
     [InlineData("fn bad(first: Int = 1, second: Int) -> Int { return second; }", "P014")]

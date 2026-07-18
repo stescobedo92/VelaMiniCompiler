@@ -41,18 +41,22 @@ public static class VelaCompiler
             return new VelaCompilation(source, parseResult, diagnostics.Items.ToArray(), null, sourceBundle);
         }
 
-        var generatedSource = new CSharpEmitter(
+        var emitter = new CSharpEmitter(
             source,
             diagnostics,
             imports,
             sourcePackages,
-            sourceBundle is null ? null : sourceBundle.GetLocation).Emit(parseResult.Root);
+            sourceBundle is null ? null : sourceBundle.GetLocation);
+        var generatedSource = emitter.Emit(parseResult.Root);
         return new VelaCompilation(
             source,
             parseResult,
             diagnostics.Items.ToArray(),
             diagnostics.HasErrors ? null : generatedSource,
-            sourceBundle);
+            sourceBundle,
+            emitter.RequiresGui,
+            emitter.RequiresHttp,
+            emitter.RequiresGrpc);
     }
 
     /// <summary>Compiles one Vela library source document and records its native FFI exports.</summary>

@@ -1,0 +1,17 @@
+include vela.core.http as http;
+include vela.core.graphql as gql;
+include vela.core.console as console;
+
+fn main() -> Int {
+    let schema = gql.create_schema();
+    gql.query(schema, "hello", fn() -> Text {
+        return "\"world\"";
+    });
+    let server = http.create_server("127.0.0.1", 0);
+    gql.mount(server, "/graphql", schema);
+    let port = http.start(server);
+    let body = http.client_post("127.0.0.1", port, "/graphql", "{\"query\":\"{ hello }\"}");
+    http.stop(server);
+    console.write_line(body);
+    return 0;
+}

@@ -33,7 +33,8 @@ internal sealed class CSharpEmitter
     {
         "vela.core.json", "vela.core.crypto", "vela.core.tcp", "vela.core.text", "vela.core.math",
         "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env",
-        "vela.core.system", "vela.core.console", "vela.concurrent"
+        "vela.core.system", "vela.core.console", "vela.core.gui", "vela.core.http",
+        "vela.core.graphql", "vela.core.grpc", "vela.concurrent"
     };
     private static readonly Dictionary<string, int> RuntimeExceptionRanks = new(StringComparer.Ordinal)
     {
@@ -75,7 +76,17 @@ internal sealed class CSharpEmitter
     private int _runtimeExceptionMemberIdentifier;
     private int _destructuringIdentifier;
     private int _callArgumentIdentifier;
+    private int _callbackIdentifier;
     private bool _isEmittingAsyncFunction;
+
+    /// <summary>Gets whether the compiled program imports the desktop GUI module.</summary>
+    public bool RequiresGui { get; private set; }
+
+    /// <summary>Gets whether the compiled program imports HTTP and/or GraphQL modules.</summary>
+    public bool RequiresHttp { get; private set; }
+
+    /// <summary>Gets whether the compiled program imports the gRPC module.</summary>
+    public bool RequiresGrpc { get; private set; }
 
     public CSharpEmitter(
         SourceText source,
@@ -117,6 +128,21 @@ internal sealed class CSharpEmitter
         _writer.WriteLine("using System.Runtime.InteropServices;");
         _writer.WriteLine("using System.Threading.Tasks;");
         _writer.WriteLine("using Vela.Runtime;");
+        if (RequiresGui)
+        {
+            _writer.WriteLine("using Vela.Ui;");
+        }
+
+        if (RequiresHttp)
+        {
+            _writer.WriteLine("using Vela.Http;");
+        }
+
+        if (RequiresGrpc)
+        {
+            _writer.WriteLine("using Vela.Grpc;");
+        }
+
         _writer.WriteLine();
         _writer.WriteLine("namespace Vela.Generated;");
         _writer.WriteLine();
@@ -310,6 +336,22 @@ internal sealed class CSharpEmitter
                 {
                     Report("VEL3014", include.Span, $"Unknown Vela core module '{include.PackageName}'.", "Import one of the documented vela.core modules.");
                     continue;
+                }
+
+                if (string.Equals(include.PackageName, "vela.core.gui", StringComparison.Ordinal))
+                {
+                    RequiresGui = true;
+                }
+
+                if (string.Equals(include.PackageName, "vela.core.http", StringComparison.Ordinal)
+                    || string.Equals(include.PackageName, "vela.core.graphql", StringComparison.Ordinal))
+                {
+                    RequiresHttp = true;
+                }
+
+                if (string.Equals(include.PackageName, "vela.core.grpc", StringComparison.Ordinal))
+                {
+                    RequiresGrpc = true;
                 }
 
                 var coreAlias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
@@ -1568,8 +1610,94 @@ internal sealed class CSharpEmitter
             TupleExpressionSyntax tuple => EmitTuple(tuple, scope),
             CallExpressionSyntax call => EmitCall(call, scope),
             ListExpressionSyntax list => EmitList(list, scope),
+            LambdaExpressionSyntax lambda => EmitLambda(lambda, scope),
             _ => UnsupportedExpression(expression)
         };
+    }
+
+    private ExpressionResult EmitLambda(LambdaExpressionSyntax lambda, Scope scope)
+    {
+        var parameterTypes = new List<VelaType>();
+        var lambdaScope = new Scope(scope);
+        foreach (var parameter in lambda.Parameters)
+        {
+            var parameterType = ResolveType(parameter.Type, EmptyGenericNames, parameter.Type.Span);
+            parameterTypes.Add(parameterType);
+            AddVariable(
+                lambdaScope,
+                parameter.Identifier.Text,
+                new VariableSymbol(parameterType, false),
+                parameter.Identifier.Span);
+        }
+
+        var returnType = ResolveType(lambda.ReturnType, EmptyGenericNames, lambda.ReturnType.Span, allowVoid: true);
+        var functionType = CreateFunctionType(parameterTypes.ToArray(), returnType);
+        var supported =
+            (returnType.IsSameAs(VelaType.Unit)
+                && parameterTypes.Count <= 1
+                && (parameterTypes.Count == 0
+                    || parameterTypes[0].IsSameAs(VelaType.Text)
+                    || parameterTypes[0].IsSameAs(VelaType.Bool)
+                    || parameterTypes[0].IsSameAs(VelaType.Int)))
+            || (returnType.IsSameAs(VelaType.Text)
+                && parameterTypes.Count <= 1
+                && (parameterTypes.Count == 0 || parameterTypes[0].IsSameAs(VelaType.Text)));
+        if (!supported)
+        {
+            Report(
+                "VEL3030",
+                lambda.Span,
+                "Supported lambdas are Void callbacks (0–1 Text/Bool/Int arg) and Text-returning handlers (0–1 Text arg).",
+                "Use one of the supported callback shapes.");
+        }
+
+        var name = "__velaCb" + _callbackIdentifier++.ToString(CultureInfo.InvariantCulture);
+        var previousAsync = _isEmittingAsyncFunction;
+        _isEmittingAsyncFunction = false;
+        var returnsText = returnType.IsSameAs(VelaType.Text);
+        var signature = parameterTypes.Count switch
+        {
+            1 when parameterTypes[0].IsSameAs(VelaType.Text) && returnsText =>
+                $"string {name}(string {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
+            1 when parameterTypes[0].IsSameAs(VelaType.Text) =>
+                $"void {name}(string {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
+            1 when parameterTypes[0].IsSameAs(VelaType.Bool) =>
+                $"void {name}(bool {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
+            1 when parameterTypes[0].IsSameAs(VelaType.Int) =>
+                $"void {name}(int {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
+            _ when returnsText => $"string {name}()",
+            _ => $"void {name}()"
+        };
+        _writer.WriteLine(signature);
+        _writer.WriteLine("{");
+        _writer.Indent();
+        var alwaysReturns = EmitBlock(lambda.Body, lambdaScope, returnType, isTailBlock: true);
+        if (!alwaysReturns && returnType.IsSameAs(VelaType.Unit))
+        {
+            _writer.WriteLine("return;");
+        }
+        else if (!alwaysReturns)
+        {
+            Report("VEL3007", lambda.Span, $"Lambda does not return {returnType} on every path.", "Return a value from every path.");
+            _writer.WriteLine($"return {DefaultValue(returnType)};");
+        }
+
+        _writer.Unindent();
+        _writer.WriteLine("}");
+        _isEmittingAsyncFunction = previousAsync;
+        return new ExpressionResult(functionType, name);
+    }
+
+    private static VelaType CreateFunctionType(VelaType[] parameterTypes, VelaType returnType)
+    {
+        var arguments = new VelaType[parameterTypes.Length + 1];
+        for (var index = 0; index < parameterTypes.Length; index++)
+        {
+            arguments[index] = parameterTypes[index];
+        }
+
+        arguments[^1] = returnType;
+        return new VelaType("Fn", arguments);
     }
 
     private ExpressionResult EmitAwait(AwaitExpressionSyntax awaited, Scope scope)
@@ -2203,6 +2331,10 @@ internal sealed class CSharpEmitter
             "vela.core.env" => EmitEnvironmentCall(call, member.Member, arguments),
             "vela.core.system" => EmitSystemCall(call, member.Member, arguments),
             "vela.core.console" => EmitConsoleCall(call, member.Member, arguments),
+            "vela.core.gui" => EmitGuiCall(call, member.Member, arguments),
+            "vela.core.http" => EmitHttpCall(call, member.Member, arguments),
+            "vela.core.graphql" => EmitGraphqlCall(call, member.Member, arguments),
+            "vela.core.grpc" => EmitGrpcCall(call, member.Member, arguments),
             "vela.concurrent" => EmitConcurrentCall(call, member.Member, arguments),
             _ => ReportUnknownCoreOperation(member.Member, module)
         };
@@ -2391,6 +2523,256 @@ internal sealed class CSharpEmitter
         "supports_color" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [], _ => "VelaConsole.SupportsColor()"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.console")
     };
+
+    private ExpressionResult EmitGuiCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "show_message" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.Text, VelaType.Text], values => $"VelaGui.ShowMessage({values[0]}, {values[1]})"),
+        "prompt" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Text, VelaType.Text], values => $"VelaGui.Prompt({values[0]}, {values[1]}, {values[2]})"),
+        "run_hello_form" => EmitCoreFunction(
+            call,
+            operation,
+            arguments,
+            VelaType.Int,
+            [VelaType.Text, VelaType.Text, VelaType.Text, VelaType.Text, VelaType.Text],
+            values => $"VelaGui.RunHelloForm({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]})"),
+        "run_counter_app" => EmitCoreFunction(
+            call,
+            operation,
+            arguments,
+            VelaType.Int,
+            [VelaType.Text, VelaType.Text, VelaType.Int],
+            values => $"VelaGui.RunCounterApp({values[0]}, {values[1]}, {values[2]})"),
+        "create_form" => EmitCoreFunction(call, operation, arguments, VelaType.GuiForm, [VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.CreateForm({values[0]}, {values[1]}, {values[2]})"),
+        "add_label" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddLabel({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "add_button" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddButton({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]}, {values[5]})"),
+        "add_textbox" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddTextBox({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]}, {values[5]})"),
+        "show" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiForm], values => $"VelaGuiComponents.Show({values[0]})"),
+        "show_owned" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiForm, VelaType.GuiForm], values => $"VelaGuiComponents.ShowOwned({values[0]}, {values[1]})"),
+        "process_events" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiForm], values => $"VelaGuiComponents.ProcessEvents({values[0]})"),
+        "is_open" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.GuiForm], values => $"VelaGuiComponents.IsOpen({values[0]})"),
+        "close" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiForm], values => $"VelaGuiComponents.Close({values[0]})"),
+        "set_text" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Text], values => $"VelaGuiComponents.SetText({values[0]}, {values[1]})"),
+        "get_text" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.GuiControl], values => $"VelaGuiComponents.GetText({values[0]})"),
+        "was_clicked" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.GuiControl], values => $"VelaGuiComponents.WasClicked({values[0]})"),
+        "on_click" => EmitGuiCallback(call, arguments, "on_click", CreateFunctionType([], VelaType.Unit), "OnClick"),
+        "on_text_changed" => EmitGuiCallback(call, arguments, "on_text_changed", CreateFunctionType([VelaType.Text], VelaType.Unit), "OnTextChanged"),
+        "on_checked_changed" => EmitGuiCallback(call, arguments, "on_checked_changed", CreateFunctionType([VelaType.Bool], VelaType.Unit), "OnCheckedChanged"),
+        "on_value_changed" => EmitGuiCallback(call, arguments, "on_value_changed", CreateFunctionType([VelaType.Int], VelaType.Unit), "OnValueChanged"),
+        "run" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.GuiForm], values => $"VelaGuiComponents.Run({values[0]})"),
+        "create_form_layout" => EmitCoreFunction(call, operation, arguments, VelaType.GuiForm, [VelaType.Text, VelaType.Int, VelaType.Int, VelaType.Text], values => $"VelaGuiComponents.CreateFormLayout({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "add_checkbox" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddCheckBox({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "add_progress" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddProgress({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]})"),
+        "add_combo" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddComboBox({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]})"),
+        "add_list" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddList({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]})"),
+        "add_grid" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddGrid({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]})"),
+        "add_slider" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddSlider({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]}, {values[5]}, {values[6]}, {values[7]})"),
+        "add_textarea" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddTextArea({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]}, {values[5]})"),
+        "add_numeric" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddNumeric({values[0]}, {values[1]}, {values[2]}, {values[3]}, {values[4]}, {values[5]}, {values[6]}, {values[7]})"),
+        "add_radio" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Text, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddRadio({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "add_separator" => EmitCoreFunction(call, operation, arguments, VelaType.GuiControl, [VelaType.GuiForm, VelaType.Int, VelaType.Int, VelaType.Int], values => $"VelaGuiComponents.AddSeparator({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "get_value" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.GuiControl], values => $"VelaGuiComponents.GetValue({values[0]})"),
+        "set_value" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Int], values => $"VelaGuiComponents.SetValue({values[0]}, {values[1]})"),
+        "add_menu_item" => EmitGuiCallback(call, arguments, "add_menu_item", CreateFunctionType([], VelaType.Unit), "AddMenuItem", formFirst: true),
+        "open_file" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.GuiForm, VelaType.Text], values => $"VelaGuiComponents.OpenFile({values[0]}, {values[1]})"),
+        "save_file" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.GuiForm, VelaType.Text, VelaType.Text], values => $"VelaGuiComponents.SaveFile({values[0]}, {values[1]}, {values[2]})"),
+        "combo_add" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Text], values => $"VelaGuiComponents.ComboAdd({values[0]}, {values[1]})"),
+        "combo_selected" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.GuiControl], values => $"VelaGuiComponents.ComboSelected({values[0]})"),
+        "list_add" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Text], values => $"VelaGuiComponents.ListAdd({values[0]}, {values[1]})"),
+        "list_clear" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl], values => $"VelaGuiComponents.ListClear({values[0]})"),
+        "list_selected" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.GuiControl], values => $"VelaGuiComponents.ListSelected({values[0]})"),
+        "grid_add_row" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Text], values => $"VelaGuiComponents.GridAddRow({values[0]}, {values[1]})"),
+        "grid_clear" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl], values => $"VelaGuiComponents.GridClear({values[0]})"),
+        "is_checked" => EmitCoreFunction(call, operation, arguments, VelaType.Bool, [VelaType.GuiControl], values => $"VelaGuiComponents.IsChecked({values[0]})"),
+        "set_checked" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Bool], values => $"VelaGuiComponents.SetChecked({values[0]}, {values[1]})"),
+        "set_progress" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Int], values => $"VelaGuiComponents.SetProgress({values[0]}, {values[1]})"),
+        "set_enabled" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Bool], values => $"VelaGuiComponents.SetEnabled({values[0]}, {values[1]})"),
+        "set_visible" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GuiControl, VelaType.Bool], values => $"VelaGuiComponents.SetVisible({values[0]}, {values[1]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.gui")
+    };
+
+    private ExpressionResult EmitHttpCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "create_server" => EmitCoreFunction(call, operation, arguments, VelaType.HttpServer, [VelaType.Text, VelaType.Int], values => $"VelaHttp.CreateServer({values[0]}, {values[1]})"),
+        "get" => EmitHttpRouteCallback(call, arguments, "get", CreateFunctionType([], VelaType.Text), "Get"),
+        "post" => EmitHttpRouteCallback(call, arguments, "post", CreateFunctionType([VelaType.Text], VelaType.Text), "Post"),
+        "put" => EmitHttpRouteCallback(call, arguments, "put", CreateFunctionType([VelaType.Text], VelaType.Text), "Put"),
+        "delete" => EmitHttpRouteCallback(call, arguments, "delete", CreateFunctionType([], VelaType.Text), "Delete"),
+        "start" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.HttpServer], values => $"VelaHttp.Start({values[0]})"),
+        "run" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.HttpServer], values => $"VelaHttp.Run({values[0]})"),
+        "stop" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.HttpServer], values => $"VelaHttp.Stop({values[0]})"),
+        "set_max_body" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.HttpServer, VelaType.Int], values => $"VelaHttp.SetMaxBody({values[0]}, {values[1]})"),
+        "client_get" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Text], values => $"VelaHttp.ClientGet({values[0]}, {values[1]}, {values[2]})"),
+        "client_post" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Text, VelaType.Text], values => $"VelaHttp.ClientPost({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.http")
+    };
+
+    private ExpressionResult EmitGraphqlCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "create_schema" => EmitCoreFunction(call, operation, arguments, VelaType.GraphqlSchema, [], _ => "VelaGraphql.CreateSchema()"),
+        "query" => EmitGraphqlFieldCallback(call, arguments, "query", CreateFunctionType([], VelaType.Text), "Query"),
+        "query_args" => EmitGraphqlFieldCallback(call, arguments, "query_args", CreateFunctionType([VelaType.Text], VelaType.Text), "QueryArgs"),
+        "mutation" => EmitGraphqlFieldCallback(call, arguments, "mutation", CreateFunctionType([VelaType.Text], VelaType.Text), "Mutation"),
+        "mount" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.HttpServer, VelaType.Text, VelaType.GraphqlSchema], values => $"VelaGraphql.Mount({values[0]}, {values[1]}, {values[2]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.graphql")
+    };
+
+    private ExpressionResult EmitGrpcCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "create_server" => EmitCoreFunction(call, operation, arguments, VelaType.GrpcServer, [VelaType.Text, VelaType.Int], values => $"VelaGrpc.CreateServer({values[0]}, {values[1]})"),
+        "map" => EmitGrpcMapCallback(call, arguments),
+        "start" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.GrpcServer], values => $"VelaGrpc.Start({values[0]})"),
+        "run" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.GrpcServer], values => $"VelaGrpc.Run({values[0]})"),
+        "stop" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.GrpcServer], values => $"VelaGrpc.Stop({values[0]})"),
+        "client_call" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Text, VelaType.Text], values => $"VelaGrpc.ClientCall({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.grpc")
+    };
+
+    private ExpressionResult EmitHttpRouteCallback(
+        CallExpressionSyntax call,
+        ExpressionResult[] arguments,
+        string operationName,
+        VelaType expectedHandler,
+        string runtimeMethod)
+    {
+        if (arguments.Length != 3)
+        {
+            Report("VEL3006", call.Span, $"Core function 'http.{operationName}' expects 3 argument(s), but received {arguments.Length}.");
+        }
+
+        var server = arguments.Length > 0 ? arguments[0] : new ExpressionResult(VelaType.HttpServer, "default!");
+        var path = arguments.Length > 1 ? arguments[1] : new ExpressionResult(VelaType.Text, "\"\"");
+        var handler = arguments.Length > 2 ? arguments[2] : new ExpressionResult(expectedHandler, "null!");
+        if (!server.Type.IsSameAs(VelaType.HttpServer) && !server.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'http.{operationName}' expects HttpServer for argument 1.");
+        }
+
+        if (!path.Type.IsSameAs(VelaType.Text) && !path.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'http.{operationName}' expects Text for argument 2.");
+        }
+
+        if (!handler.Type.IsSameAs(expectedHandler) && !handler.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'http.{operationName}' expects {expectedHandler}, but received '{handler.Type}'.");
+        }
+
+        return new ExpressionResult(VelaType.Unit, $"VelaHttp.{runtimeMethod}({server.Code}, {path.Code}, {handler.Code})");
+    }
+
+    private ExpressionResult EmitGraphqlFieldCallback(
+        CallExpressionSyntax call,
+        ExpressionResult[] arguments,
+        string operationName,
+        VelaType expectedHandler,
+        string runtimeMethod)
+    {
+        if (arguments.Length != 3)
+        {
+            Report("VEL3006", call.Span, $"Core function 'graphql.{operationName}' expects 3 argument(s), but received {arguments.Length}.");
+        }
+
+        var schema = arguments.Length > 0 ? arguments[0] : new ExpressionResult(VelaType.GraphqlSchema, "default!");
+        var name = arguments.Length > 1 ? arguments[1] : new ExpressionResult(VelaType.Text, "\"\"");
+        var handler = arguments.Length > 2 ? arguments[2] : new ExpressionResult(expectedHandler, "null!");
+        if (!schema.Type.IsSameAs(VelaType.GraphqlSchema) && !schema.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'graphql.{operationName}' expects GraphqlSchema for argument 1.");
+        }
+
+        if (!name.Type.IsSameAs(VelaType.Text) && !name.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'graphql.{operationName}' expects Text for argument 2.");
+        }
+
+        if (!handler.Type.IsSameAs(expectedHandler) && !handler.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'graphql.{operationName}' expects {expectedHandler}, but received '{handler.Type}'.");
+        }
+
+        return new ExpressionResult(VelaType.Unit, $"VelaGraphql.{runtimeMethod}({schema.Code}, {name.Code}, {handler.Code})");
+    }
+
+    private ExpressionResult EmitGrpcMapCallback(CallExpressionSyntax call, ExpressionResult[] arguments)
+    {
+        var expectedHandler = CreateFunctionType([VelaType.Text], VelaType.Text);
+        if (arguments.Length != 3)
+        {
+            Report("VEL3006", call.Span, $"Core function 'grpc.map' expects 3 argument(s), but received {arguments.Length}.");
+        }
+
+        var server = arguments.Length > 0 ? arguments[0] : new ExpressionResult(VelaType.GrpcServer, "default!");
+        var method = arguments.Length > 1 ? arguments[1] : new ExpressionResult(VelaType.Text, "\"\"");
+        var handler = arguments.Length > 2 ? arguments[2] : new ExpressionResult(expectedHandler, "null!");
+        if (!server.Type.IsSameAs(VelaType.GrpcServer) && !server.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, "Core function 'grpc.map' expects GrpcServer for argument 1.");
+        }
+
+        if (!method.Type.IsSameAs(VelaType.Text) && !method.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, "Core function 'grpc.map' expects Text for argument 2.");
+        }
+
+        if (!handler.Type.IsSameAs(expectedHandler) && !handler.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'grpc.map' expects {expectedHandler}, but received '{handler.Type}'.");
+        }
+
+        return new ExpressionResult(VelaType.Unit, $"VelaGrpc.Map({server.Code}, {method.Code}, {handler.Code})");
+    }
+
+    private ExpressionResult EmitGuiCallback(
+        CallExpressionSyntax call,
+        ExpressionResult[] arguments,
+        string operationName,
+        VelaType expectedHandler,
+        string runtimeMethod,
+        bool formFirst = false)
+    {
+        if (arguments.Length != 2 && !(formFirst && arguments.Length == 3))
+        {
+            var expected = formFirst ? 3 : 2;
+            Report("VEL3006", call.Span, $"Core function 'gui.{operationName}' expects {expected} argument(s), but received {arguments.Length}.");
+        }
+
+        if (formFirst)
+        {
+            var form = arguments.Length > 0 ? arguments[0] : new ExpressionResult(VelaType.GuiForm, "default!");
+            var path = arguments.Length > 1 ? arguments[1] : new ExpressionResult(VelaType.Text, "\"\"");
+            var handler = arguments.Length > 2 ? arguments[2] : new ExpressionResult(expectedHandler, "null!");
+            if (!form.Type.IsSameAs(VelaType.GuiForm) && !form.Type.IsUnknown)
+            {
+                Report("VEL3002", call.Span, $"Core function 'gui.{operationName}' expects GuiForm for argument 1.");
+            }
+
+            if (!path.Type.IsSameAs(VelaType.Text) && !path.Type.IsUnknown)
+            {
+                Report("VEL3002", call.Span, $"Core function 'gui.{operationName}' expects Text for argument 2.");
+            }
+
+            if (!handler.Type.IsSameAs(expectedHandler) && !handler.Type.IsUnknown)
+            {
+                Report("VEL3002", call.Span, $"Core function 'gui.{operationName}' expects {expectedHandler}, but received '{handler.Type}'.");
+            }
+
+            return new ExpressionResult(VelaType.Unit, $"VelaGuiComponents.{runtimeMethod}({form.Code}, {path.Code}, {handler.Code})");
+        }
+
+        var control = arguments.Length > 0 ? arguments[0] : new ExpressionResult(VelaType.GuiControl, "default!");
+        var callback = arguments.Length > 1 ? arguments[1] : new ExpressionResult(expectedHandler, "null!");
+        if (!control.Type.IsSameAs(VelaType.GuiControl) && !control.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'gui.{operationName}' expects GuiControl for argument 1, but received '{control.Type}'.");
+        }
+
+        if (!callback.Type.IsSameAs(expectedHandler) && !callback.Type.IsUnknown)
+        {
+            Report("VEL3002", call.Span, $"Core function 'gui.{operationName}' expects {expectedHandler}, but received '{callback.Type}'.");
+        }
+
+        return new ExpressionResult(VelaType.Unit, $"VelaGuiComponents.{runtimeMethod}({control.Code}, {callback.Code})");
+    }
 
     private ExpressionResult EmitEncodingCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
     {
@@ -3218,6 +3600,15 @@ internal sealed class CSharpEmitter
             return new VelaType("Tuple", tupleElements);
         }
 
+        if (syntax is FunctionTypeSyntax functionType)
+        {
+            var parameterTypes = functionType.ParameterTypes
+                .Select(parameter => ResolveType(parameter, genericNames, parameter.Span))
+                .ToArray();
+            var returnType = ResolveType(functionType.ReturnType, genericNames, functionType.ReturnType.Span, allowVoid: true);
+            return CreateFunctionType(parameterTypes, returnType);
+        }
+
         if (syntax is not NamedTypeSyntax named)
         {
             Report("VEL3013", syntax.Span, "Unsupported type syntax.");
@@ -3237,6 +3628,11 @@ internal sealed class CSharpEmitter
             "Text" or "String" => VelaType.Text,
             "Any" => VelaType.Any,
             "TcpConnection" => VelaType.TcpConnection,
+            "GuiForm" => VelaType.GuiForm,
+            "GuiControl" => VelaType.GuiControl,
+            "HttpServer" => VelaType.HttpServer,
+            "GraphqlSchema" => VelaType.GraphqlSchema,
+            "GrpcServer" => VelaType.GrpcServer,
             "Cancellation" => VelaType.Cancellation,
             "ProcessResult" => VelaType.ProcessResult,
             "Void" or "Unit" when allowVoid => VelaType.Unit,
@@ -3690,8 +4086,20 @@ internal sealed class CSharpEmitter
         "Text" => "string",
         "Any" => "object",
         "TcpConnection" => "TcpConnection",
+        "GuiForm" => "GuiForm",
+        "GuiControl" => "GuiControl",
+        "HttpServer" => "HttpServer",
+        "GraphqlSchema" => "VelaGraphqlSchema",
+        "GrpcServer" => "GrpcServer",
         "Cancellation" => "VelaCancellation",
         "ProcessResult" => "VelaProcessResult",
+        "Fn" when type.TypeArguments.Count == 1 && type.TypeArguments[0].IsSameAs(VelaType.Unit) => "Action",
+        "Fn" when type.TypeArguments.Count == 1 && type.TypeArguments[0].IsSameAs(VelaType.Text) => "Func<string>",
+        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Text) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<string>",
+        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Bool) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<bool>",
+        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Int) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<int>",
+        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Text) && type.TypeArguments[1].IsSameAs(VelaType.Text) => "Func<string, string>",
+        "Fn" => "Delegate",
         "Unit" => "void",
         "Option" when type.TypeArguments.Count == 1 => $"Option<{CSharpType(type.TypeArguments[0])}>",
         "Result" when type.TypeArguments.Count == 2 => $"Result<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",

@@ -1,0 +1,19 @@
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let form = gui.create_form_layout("Rich controls", 420, 360, "column");
+    let area = gui.add_textarea(form, "Hello\nVela", 0, 0, 360, 80);
+    let slider = gui.add_slider(form, 0, 100, 40, 0, 0, 280, 28);
+    let numeric = gui.add_numeric(form, 2, 0, 10, 0, 0, 120, 28);
+    let label = gui.add_label(form, "ready", 0, 0);
+    gui.add_separator(form, 0, 0, 300);
+    let radio_a = gui.add_radio(form, "Option A", 0, 0);
+    let radio_b = gui.add_radio(form, "Option B", 0, 0);
+    gui.set_checked(radio_a, true);
+    gui.set_checked(radio_b, false);
+    gui.on_value_changed(slider, fn(value: Int) -> Void {
+        gui.set_value(numeric, value / 10);
+        gui.set_text(label, gui.get_text(area));
+    });
+    return gui.run(form);
+}

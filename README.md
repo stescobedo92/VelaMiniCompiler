@@ -59,9 +59,10 @@ statements.
   sync programs unchanged and emits .NET async state machines only when used.
 - `include vela.core;` for the core surface and `include package.name as alias;`
   for manifest-declared native or source-linked package dependencies.
-- Explicit, Native-AOT-trimmed core modules: `json`, `crypto`, `tcp`, `text`,
-  `math`, `time`, `random`, expanded `io`, `encoding`, `env`, `system`,
-  `console`, and `vela.concurrent`.
+- Explicit core modules: `json`, `crypto`, `tcp`, `text`, `math`, `time`,
+  `random`, expanded `io`, `encoding`, `env`, `system`, `console`,
+  cross-platform Avalonia `gui`, REST/GraphQL (`http` / `graphql`), gRPC
+  (`grpc`), and `vela.concurrent`.
 - Source-linked `vela.std.cli` and `vela.std.log` packages for typed command
   definitions, O(1) expected option lookup, level filtering, terminal-aware
   color, stderr routing, and structured JSON that reuses `vela.core.json`.
@@ -76,6 +77,9 @@ statements.
 src/
   Vela.Core/       Source text, diagnostics, lexer, parser, AST, and semantics
   Vela.Runtime/    Checked numeric operations, safe values, collections, ABI types
+  Vela.Ui.Runtime/ Avalonia GUI helpers for vela.core.gui
+  Vela.Http.Runtime/ Kestrel REST + GraphQL helpers
+  Vela.Grpc.Runtime/ gRPC unary helpers
   Vela.Backend/    C# emission, packages, ABI manifests, and Native AOT publishing
   Vela.Cli/        Color-aware command-line compiler
 tests/
@@ -113,9 +117,35 @@ instead of copying the bare executable alone.
 For release signing, verification, CI behavior, and exact install commands, see
 [the release and installation guide](docs/releasing.md).
 
+## Install locally (developer machine)
+
+Publish Native AOT `vela` into your user profile and add it to PATH:
+
+```powershell
+pwsh -File .\eng\install-local.ps1
+```
+
+Then open a new terminal and use the global command:
+
+```powershell
+vela run .\examples\factorial.vela
+vela run .\examples\ui-components.vela
+```
+
+On macOS/Linux: `./eng/install-local.sh` (symlink under `~/.local/bin`).
+Official MSI/PKG/DEB/RPM installers also put `vela` on PATH; see
+[releasing.md](docs/releasing.md).
+
 ## Use the compiler
 
-Run a source file during development:
+With an installed `vela` on PATH:
+
+```powershell
+vela run .\examples\factorial.vela
+vela check .\examples\types-objects.vela
+```
+
+From the repository without installing:
 
 ```powershell
 dotnet run --project .\src\Vela.Cli -- run .\examples\factorial.vela

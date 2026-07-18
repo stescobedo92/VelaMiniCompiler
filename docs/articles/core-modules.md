@@ -50,6 +50,80 @@ ordinal sorting; recursive deletion rejects filesystem roots.
 stderr explicit. `is_output_redirected` and `supports_color` respect redirection,
 `NO_COLOR`, and `TERM=dumb`.
 
+## `vela.core.gui`
+
+Cross-platform desktop GUI (Avalonia). Importing this module links
+`Vela.Ui.Runtime` into the generated project.
+
+- `show_message(title, message)` opens a modal information dialog.
+- `prompt(title, label, initial_value)` returns the confirmed text.
+- `run_hello_form(...)` / `run_counter_app(...)` demo apps.
+- Component API:
+  - Forms: `create_form`, `create_form_layout(title, w, h, "column"|"row"|"grid")`
+  - Controls: `add_label`, `add_button`, `add_textbox`, `add_textarea`,
+    `add_checkbox`, `add_radio`, `add_progress`, `add_slider`, `add_numeric`,
+    `add_combo`, `add_list`, `add_grid`, `add_separator`
+  - Values: `get_value` / `set_value` (slider/numeric), `on_value_changed(fn(value: Int) -> Void)`
+  - Callbacks: `on_click`, `on_text_changed`, `on_checked_changed`
+  - Menus/files: `add_menu_item`, `open_file`, `save_file`
+  - Loop: `run(form)` (preferred)
+
+Set `VELA_UI_HEADLESS=1` to skip window creation (useful in CI).
+
+## `vela.core.http` / `vela.core.graphql` / `vela.core.grpc`
+
+Opt-in API adapters (Kestrel / gRPC). Importing them links `Vela.Http.Runtime`
+and/or `Vela.Grpc.Runtime`.
+
+REST (`vela.core.http`):
+
+```vela
+include vela.core.http as http;
+
+fn main() -> Int {
+    let server = http.create_server("127.0.0.1", 0);
+    http.get(server, "/health", fn() -> Text { return "{\"ok\":true}"; });
+    http.post(server, "/echo", fn(body: Text) -> Text { return body; });
+    let port = http.start(server);
+    let body = http.client_get("127.0.0.1", port, "/health");
+    http.stop(server);
+    return 0;
+}
+```
+
+GraphQL (`vela.core.graphql`) mounts on an HTTP server:
+
+```vela
+include vela.core.http as http;
+include vela.core.graphql as gql;
+
+fn main() -> Int {
+    let schema = gql.create_schema();
+    gql.query(schema, "hello", fn() -> Text { return "\"world\""; });
+    let server = http.create_server("127.0.0.1", 8080);
+    gql.mount(server, "/graphql", schema);
+    return http.run(server);
+}
+```
+
+gRPC (`vela.core.grpc`) maps unary methods by name (`Service/Method`) over the
+shared `vela.rpc.VelaRpc` protobuf service:
+
+```vela
+include vela.core.grpc as grpc;
+
+fn main() -> Int {
+    let server = grpc.create_server("127.0.0.1", 50051);
+    grpc.map(server, "hello.Greeter/SayHello", fn(request: Text) -> Text {
+        return "{\"message\":\"hi\"}";
+    });
+    return grpc.run(server);
+}
+```
+
+Examples: `examples/api-rest.vela`, `examples/api-graphql.vela`,
+`examples/api-grpc.vela`.
+
 ## Data, text, and security
 
 - `vela.core.json`: validation, compacting, escaping/quoting, and typed

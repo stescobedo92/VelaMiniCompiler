@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+option csharp_namespace = "Vela.Grpc.Protocol";
+
+package vela.rpc;
+
+service VelaRpc {
+  rpc Call (RpcRequest) returns (RpcResponse);
+}
+
+message RpcRequest {
+  string method = 1;
+  string body = 2;
+}
+
+message RpcResponse {
+  string body = 1;
+  int32 status = 2;
+}

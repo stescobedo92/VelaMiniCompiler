@@ -1,0 +1,23 @@
+# Multi-window counter desk (Windows desktop).
+# - Main window: counter label, +1 / -1 / Reset / Open details / About
+# - Secondary window: mirrored count + Refresh
+#
+# Run with:
+#   dotnet run --project src/Vela.Cli -- run examples/ui-counter-desk.vela
+#
+# Headless CI:
+#   $env:VELA_UI_HEADLESS='1'
+
+include vela.core;
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    print("Launching the counter desk...");
+    let exit_code = gui.run_counter_app(
+        "Vela Counter Desk",
+        "Counter Details",
+        10
+    );
+    print("Counter desk closed.");
+    return exit_code;
+}

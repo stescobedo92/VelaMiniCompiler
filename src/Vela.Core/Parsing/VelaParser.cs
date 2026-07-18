@@ -968,6 +968,11 @@ public sealed class VelaParser
             return new TupleTypeSyntax(left, elements, right);
         }
 
+        if (Current.Kind == TokenKind.Identifier && string.Equals(Current.Text, "Fn", StringComparison.Ordinal))
+        {
+            return ParseFunctionType();
+        }
+
         var identifier = Match(TokenKind.Identifier);
         if (string.Equals(identifier.Text, "Unit", StringComparison.Ordinal))
         {
@@ -1005,6 +1010,53 @@ public sealed class VelaParser
 
         SyntaxToken? question = Current.Kind == TokenKind.Question ? NextToken() : null;
         return new NamedTypeSyntax(identifier, less, typeArguments, greater, question);
+    }
+
+    private FunctionTypeSyntax ParseFunctionType()
+    {
+        var fn = Match(TokenKind.Identifier);
+        var less = Match(TokenKind.Less);
+        SkipNewLines();
+        var leftParen = Match(TokenKind.LeftParen);
+        var parameterTypes = new List<TypeSyntax>();
+        SkipNewLines();
+        if (Current.Kind != TokenKind.RightParen)
+        {
+            do
+            {
+                parameterTypes.Add(ParseType());
+                if (Current.Kind != TokenKind.Comma)
+                {
+                    break;
+                }
+
+                _ = NextToken();
+                SkipNewLines();
+            }
+            while (Current.Kind is not TokenKind.RightParen and not TokenKind.EndOfFile);
+        }
+
+        SkipNewLines();
+        var rightParen = Match(TokenKind.RightParen);
+        SkipNewLines();
+        var comma = Match(TokenKind.Comma);
+        SkipNewLines();
+        var returnType = ParseType();
+        SkipNewLines();
+        var greater = Match(TokenKind.Greater);
+        return new FunctionTypeSyntax(fn, less, leftParen, parameterTypes, rightParen, comma, returnType, greater);
+    }
+
+    private LambdaExpressionSyntax ParseLambdaExpression()
+    {
+        var fn = Match(TokenKind.FnKeyword);
+        var leftParenthesis = Match(TokenKind.LeftParen);
+        var parameters = ParseParameters();
+        var rightParenthesis = Match(TokenKind.RightParen);
+        var arrow = Match(TokenKind.Arrow);
+        var returnType = ParseType();
+        var body = ParseBlock();
+        return new LambdaExpressionSyntax(fn, leftParenthesis, parameters, rightParenthesis, arrow, returnType, body);
     }
 
     private ExpressionSyntax ParseExpression() => ParseAssignmentExpression();
@@ -1174,6 +1226,11 @@ public sealed class VelaParser
         if (Current.Kind is TokenKind.IntegerLiteral or TokenKind.FloatLiteral or TokenKind.StringLiteral or TokenKind.TrueKeyword or TokenKind.FalseKeyword or TokenKind.NilKeyword)
         {
             return new LiteralExpressionSyntax(NextToken());
+        }
+
+        if (Current.Kind == TokenKind.FnKeyword)
+        {
+            return ParseLambdaExpression();
         }
 
         if (Current.Kind == TokenKind.Identifier)

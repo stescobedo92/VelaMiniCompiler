@@ -1,0 +1,12 @@
+# Simple GUI prompt dialog (Windows desktop).
+# Run with: vela run examples/gui-prompt.vela
+
+include vela.core;
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let name = gui.prompt("Greeting", "Your name", "Vela");
+    gui.show_message("Hello", "Hello, " + name + "!");
+    print(name);
+    return 0;
+}

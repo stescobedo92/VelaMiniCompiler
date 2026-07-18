@@ -49,6 +49,8 @@ returned as `VelaCliResult`, allowing the application to choose its exit code.
 - `vela.std.config`: environment fallbacks and JSON configuration access.
 - `vela.std.http`: bounded plaintext HTTP/1.1 over async core TCP. It does not
   claim TLS, redirects, streaming, or a general HTTP client surface.
+- For hosted REST / GraphQL / gRPC APIs, use core modules `vela.core.http`,
+  `vela.core.graphql`, and `vela.core.grpc` (Kestrel adapters).
 - `vela.std.test`: small assertion/timing helpers for Vela examples.
 
 Both config and HTTP delegate JSON operations to `vela.core.json`; there is no

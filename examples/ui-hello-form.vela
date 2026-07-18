@@ -1,0 +1,15 @@
+# Interactive Hello Form (Windows desktop).
+# Run with: vela run examples/ui-hello-form.vela
+# Headless CI: set VELA_UI_HEADLESS=1 before running.
+
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    return gui.run_hello_form(
+        "Hello Form",
+        "Greeting",
+        "Message",
+        "Hello World",
+        "Show"
+    );
+}

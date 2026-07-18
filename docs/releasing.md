@@ -16,6 +16,24 @@ explicit warning and publishes unsigned artifacts with checksums and GitHub
 provenance attestations. A manual run with `sign=true` still fails closed if any
 required credential is missing.
 
+## Local developer install
+
+To install a PATH-visible `vela` from this repository without waiting for a
+GitHub release:
+
+```powershell
+pwsh -File .\eng\install-local.ps1
+```
+
+```bash
+./eng/install-local.sh
+```
+
+On Windows the script publishes Native AOT output under
+`%LOCALAPPDATA%\Vela\bin` and appends that folder to the **user** `PATH`.
+On macOS/Linux it publishes under `~/.local/lib/vela` and symlinks
+`~/.local/bin/vela`. Open a new terminal afterwards, then run `vela --help`.
+
 ## Release artifacts
 
 | Platform | Architectures | Artifacts | Global command |

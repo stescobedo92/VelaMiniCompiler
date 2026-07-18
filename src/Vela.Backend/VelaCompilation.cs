@@ -10,9 +10,15 @@ public sealed record VelaCompilation(
     ParseResult ParseResult,
     IReadOnlyList<Diagnostic> Diagnostics,
     string? GeneratedSource,
-    VelaSourceBundle? SourceBundle = null)
+    VelaSourceBundle? SourceBundle = null,
+    bool RequiresGui = false,
+    bool RequiresHttp = false,
+    bool RequiresGrpc = false)
 {
     public bool HasErrors => Diagnostics.Any(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+    /// <summary>Gets whether publish should avoid Native AOT for adapter-heavy hosts.</summary>
+    public bool RequiresFrameworkDependentPublish => RequiresGui || RequiresHttp || RequiresGrpc;
 
     /// <summary>Gets a diagnostic with the physical source document that owns its location.</summary>
     public VelaMappedDiagnostic MapDiagnostic(Diagnostic diagnostic)

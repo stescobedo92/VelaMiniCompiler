@@ -45,7 +45,7 @@ jobs:
         run: |
           dotnet publish .\src\Vela.Cli\Vela.Cli.csproj --configuration Release --runtime win-x64 --self-contained true '-p:PublishAot=true' '-p:StripSymbols=true' --output .release\publish
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Move-Item .release\publish\Vela.Cli.exe .release\publish\vela.exe
+          if (Test-Path .release\publish\Vela.Cli.exe) { Move-Item .release\publish\Vela.Cli.exe .release\publish\vela.exe -Force }
           .\eng\release\stage-runtime.ps1 -PublishDirectory .release\publish
 
       - name: Build MSI, wizard, and portable archive
@@ -101,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           dotnet publish src/Vela.Cli/Vela.Cli.csproj --configuration Release --runtime '${{ matrix.runtime }}' --self-contained true -p:PublishAot=true -p:StripSymbols=true --output .release/publish
-          mv .release/publish/Vela.Cli .release/publish/vela
+          if [ -f .release/publish/Vela.Cli ]; then mv .release/publish/Vela.Cli .release/publish/vela; fi
           pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory .release/publish
 
       - name: Build PKG, DMG, and portable archive
@@ -154,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           dotnet publish src/Vela.Cli/Vela.Cli.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishAot=true -p:StripSymbols=true --output .release/publish
-          mv .release/publish/Vela.Cli .release/publish/vela
+          if [ -f .release/publish/Vela.Cli ]; then mv .release/publish/Vela.Cli .release/publish/vela; fi
           pwsh ./eng/release/stage-runtime.ps1 -PublishDirectory .release/publish
 
       - name: Build DEB, RPM, and portable archive

@@ -98,7 +98,11 @@ internal static class VelaCommandLine
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "vela", Guid.NewGuid().ToString("N"));
         try
         {
-            var buildService = new VelaBuildService(FindRuntimeProject());
+            var buildService = new VelaBuildService(
+                FindRuntimeProject(),
+                FindUiRuntimeProject(),
+                FindHttpRuntimeProject(),
+                FindGrpcRuntimeProject());
             var generatedProject = buildService.WriteSourceProject(
                 compilation,
                 new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
@@ -149,7 +153,11 @@ internal static class VelaCommandLine
         }
 
         renderer.Status("Checking", input);
-        var buildService = new VelaBuildService(FindRuntimeProject());
+        var buildService = new VelaBuildService(
+            FindRuntimeProject(),
+            FindUiRuntimeProject(),
+            FindHttpRuntimeProject(),
+            FindGrpcRuntimeProject());
         var dependencyStagingDirectory = package is null
             ? null
             : Path.Combine(Path.GetTempPath(), "vela", "dependencies", Guid.NewGuid().ToString("N"));
@@ -431,6 +439,38 @@ internal static class VelaCommandLine
         }
 
         throw new FileNotFoundException("Unable to locate the Vela runtime support project. Reinstall Vela or run the development CLI from the repository.");
+    }
+
+    private static string? FindUiRuntimeProject() =>
+        FindAdapterRuntimeProject("ui-runtime", "Vela.Ui.Runtime");
+
+    private static string? FindHttpRuntimeProject() =>
+        FindAdapterRuntimeProject("http-runtime", "Vela.Http.Runtime");
+
+    private static string? FindGrpcRuntimeProject() =>
+        FindAdapterRuntimeProject("grpc-runtime", "Vela.Grpc.Runtime");
+
+    private static string? FindAdapterRuntimeProject(string installedFolder, string projectFolderName)
+    {
+        var installed = Path.Combine(AppContext.BaseDirectory, installedFolder, $"{projectFolderName}.csproj");
+        if (File.Exists(installed))
+        {
+            return installed;
+        }
+
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            for (var directory = new DirectoryInfo(start); directory is not null; directory = directory.Parent)
+            {
+                var candidate = Path.Combine(directory.FullName, "src", projectFolderName, $"{projectFolderName}.csproj");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static int Fail(VelaConsoleRenderer renderer, string message)

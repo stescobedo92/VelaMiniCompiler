@@ -178,7 +178,7 @@ jobs:
         shell: pwsh
         run: |
           dotnet publish .\src\Vela.Cli\Vela.Cli.csproj --configuration Release --runtime win-x64 --self-contained true "-p:PublishAot=true" "-p:StripSymbols=true" "-p:Version=$env:VERSION" --output $env:PUBLISH
-          Move-Item "$env:PUBLISH\Vela.Cli.exe" "$env:PUBLISH\vela.exe"
+          if (Test-Path "$env:PUBLISH\Vela.Cli.exe") { Move-Item "$env:PUBLISH\Vela.Cli.exe" "$env:PUBLISH\vela.exe" -Force }
 
       - name: Stage installed compiler runtime
         shell: pwsh
@@ -285,7 +285,7 @@ jobs:
             -p:StripSymbols=true \
             -p:Version="$VERSION" \
             --output "$PUBLISH"
-          mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"
+          if [ -f "$PUBLISH/Vela.Cli" ]; then mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"; fi
 
       - name: Stage installed compiler runtime
         shell: bash
@@ -439,7 +439,7 @@ jobs:
             -p:StripSymbols=true \
             -p:Version="$VERSION" \
             --output "$PUBLISH"
-          mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"
+          if [ -f "$PUBLISH/Vela.Cli" ]; then mv "$PUBLISH/Vela.Cli" "$PUBLISH/vela"; fi
 
       - name: Stage installed compiler runtime
         shell: bash

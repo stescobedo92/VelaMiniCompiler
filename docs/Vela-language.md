@@ -333,6 +333,7 @@ them. Their aliases default to the final module name.
 | `vela.core.env` | environment variables, process arguments, current directory |
 | `vela.core.system` | direct bounded process execution, executable lookup, process metadata |
 | `vela.core.console` | stdout/stderr output, redirection and color capability |
+| `vela.core.gui` | Windows desktop UI: dialogs, demos, and component API (`create_form`, `add_button`, `was_clicked`, …) |
 | `vela.concurrent` | explicit cancellation creation, request, and state |
 
 ```vela

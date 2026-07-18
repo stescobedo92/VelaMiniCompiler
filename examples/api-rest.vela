@@ -1,0 +1,19 @@
+include vela.core.http as http;
+include vela.core.console as console;
+
+fn main() -> Int {
+    let server = http.create_server("127.0.0.1", 0);
+    http.get(server, "/health", fn() -> Text {
+        return "{\"ok\":true}";
+    });
+    http.post(server, "/echo", fn(body: Text) -> Text {
+        return body;
+    });
+    let port = http.start(server);
+    let health = http.client_get("127.0.0.1", port, "/health");
+    let echo = http.client_post("127.0.0.1", port, "/echo", "{\"n\":7}");
+    http.stop(server);
+    console.write_line(health);
+    console.write_line(echo);
+    return 0;
+}

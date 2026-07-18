@@ -1160,8 +1160,165 @@ public sealed class VelaBackendTests
         File.WriteAllText(Path.Combine(directory, "src", "lib.vela"), "public ffi fn value() -> Int { return 1; }");
     }
 
+    [Fact]
+    public async Task CompileGuiModuleGeneratesWindowsProjectAndRunsHeadless()
+    {
+        var compilation = Compile("""
+            include vela.core.gui as gui;
+            fn main() -> Int {
+                return gui.run_hello_form("Hello Form", "Greeting", "Message", "Hello World", "Show");
+            }
+            """, "ui-hello-form.vela");
+
+        Assert.False(compilation.HasErrors);
+        Assert.True(compilation.RequiresGui);
+        Assert.NotNull(compilation.GeneratedSource);
+        Assert.Contains("using Vela.Ui;", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaGui.RunHelloForm(", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        var previousHeadless = Environment.GetEnvironmentVariable("VELA_UI_HEADLESS");
+        try
+        {
+            Environment.SetEnvironmentVariable("VELA_UI_HEADLESS", "1");
+            var project = new VelaBuildService(GetRuntimeProjectPath(), GetUiRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("UiHelloForm", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var projectFile = File.ReadAllText(project.ProjectPath);
+            Assert.Contains("<TargetFramework>net10.0</TargetFramework>", projectFile, StringComparison.Ordinal);
+            Assert.Contains("Vela.Ui.Runtime.csproj", projectFile, StringComparison.Ordinal);
+
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("[gui] Greeting: Hello World", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VELA_UI_HEADLESS", previousHeadless);
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task CompileGuiOnClickLambdaGeneratesLocalCallbackAndRuns()
+    {
+        var compilation = Compile("""
+            include vela.core.gui as gui;
+            fn main() -> Int {
+                let form = gui.create_form("Demo", 400, 240);
+                let plus = gui.add_button(form, "+1", 20, 60, 90, 32);
+                gui.on_click(plus, fn() -> Void {
+                    gui.set_text(plus, "clicked");
+                });
+                return gui.run(form);
+            }
+            """, "ui-onclick.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static d => d.Message)));
+        Assert.NotNull(compilation.GeneratedSource);
+        Assert.Contains("void __velaCb", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaGuiComponents.OnClick(", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaGuiComponents.Run(", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        var previousHeadless = Environment.GetEnvironmentVariable("VELA_UI_HEADLESS");
+        try
+        {
+            Environment.SetEnvironmentVariable("VELA_UI_HEADLESS", "1");
+            var project = new VelaBuildService(GetRuntimeProjectPath(), GetUiRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("UiOnClick", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.Equal(0, result.ExitCode);
+            Assert.Contains("[gui] run form 'Demo'", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VELA_UI_HEADLESS", previousHeadless);
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
     private static string GetRuntimeProjectPath() =>
         Path.Combine(FindRepositoryRoot(), "src", "Vela.Runtime", "Vela.Runtime.csproj");
+
+    private static string GetUiRuntimeProjectPath() =>
+        Path.Combine(FindRepositoryRoot(), "src", "Vela.Ui.Runtime", "Vela.Ui.Runtime.csproj");
+
+    private static string GetHttpRuntimeProjectPath() =>
+        Path.Combine(FindRepositoryRoot(), "src", "Vela.Http.Runtime", "Vela.Http.Runtime.csproj");
+
+    private static string GetGrpcRuntimeProjectPath() =>
+        Path.Combine(FindRepositoryRoot(), "src", "Vela.Grpc.Runtime", "Vela.Grpc.Runtime.csproj");
+
+    [Fact]
+    public async Task CompileHttpRestModuleGeneratesProjectAndRunsLoopback()
+    {
+        var compilation = Compile("""
+            include vela.core.http as http;
+            fn main() -> Int {
+                let server = http.create_server("127.0.0.1", 0);
+                http.get(server, "/health", fn() -> Text { return "{\"ok\":true}"; });
+                let port = http.start(server);
+                let body = http.client_get("127.0.0.1", port, "/health");
+                http.stop(server);
+                return 0;
+            }
+            """, "api-rest.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static d => d.Message)));
+        Assert.True(compilation.RequiresHttp);
+        Assert.Contains("VelaHttp.CreateServer(", compilation.GeneratedSource, StringComparison.Ordinal);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath(), null, GetHttpRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("ApiRest", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            Assert.Contains("Vela.Http.Runtime.csproj", File.ReadAllText(project.ProjectPath), StringComparison.Ordinal);
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.Equal(0, result.ExitCode);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task CompileGrpcModuleGeneratesProjectAndRunsUnary()
+    {
+        var compilation = Compile("""
+            include vela.core.grpc as grpc;
+            fn main() -> Int {
+                let server = grpc.create_server("127.0.0.1", 0);
+                grpc.map(server, "hello.Greeter/SayHello", fn(request: Text) -> Text { return request; });
+                let port = grpc.start(server);
+                let body = grpc.client_call("127.0.0.1", port, "hello.Greeter/SayHello", "Ada");
+                grpc.stop(server);
+                return 0;
+            }
+            """, "api-grpc.vela");
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static d => d.Message)));
+        Assert.True(compilation.RequiresGrpc);
+
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath(), null, null, GetGrpcRuntimeProjectPath()).WriteSourceProject(
+                compilation,
+                new BuildOptions("ApiGrpc", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            Assert.Contains("Vela.Grpc.Runtime.csproj", File.ReadAllText(project.ProjectPath), StringComparison.Ordinal);
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.Equal(0, result.ExitCode);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
 
     private static string CreateTemporaryDirectory()
     {

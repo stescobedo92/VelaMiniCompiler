@@ -1,0 +1,14 @@
+include vela.core.grpc as grpc;
+include vela.core.console as console;
+
+fn main() -> Int {
+    let server = grpc.create_server("127.0.0.1", 0);
+    grpc.map(server, "hello.Greeter/SayHello", fn(request: Text) -> Text {
+        return "{\"message\":\"Hello " + request + "\"}";
+    });
+    let port = grpc.start(server);
+    let body = grpc.client_call("127.0.0.1", port, "hello.Greeter/SayHello", "Ada");
+    grpc.stop(server);
+    console.write_line(body);
+    return 0;
+}

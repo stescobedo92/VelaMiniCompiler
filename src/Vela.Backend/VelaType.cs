@@ -15,6 +15,11 @@ public sealed class VelaType
     public static readonly VelaType Text = new("Text");
     public static readonly VelaType Any = new("Any");
     public static readonly VelaType TcpConnection = new("TcpConnection");
+    public static readonly VelaType GuiForm = new("GuiForm");
+    public static readonly VelaType GuiControl = new("GuiControl");
+    public static readonly VelaType HttpServer = new("HttpServer");
+    public static readonly VelaType GraphqlSchema = new("GraphqlSchema");
+    public static readonly VelaType GrpcServer = new("GrpcServer");
     public static readonly VelaType Cancellation = new("Cancellation");
     public static readonly VelaType ProcessResult = new("ProcessResult");
     public static readonly VelaType Unit = new("Unit");
