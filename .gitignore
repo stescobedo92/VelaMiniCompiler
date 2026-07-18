@@ -8,6 +8,9 @@ publish/
 .release/
 docs/_site/
 docs/api/
+site/
+eng/docs/node_modules/
+eng/docs/package-lock.json
 
 # Test and coverage output
 TestResults/

@@ -1,0 +1,11 @@
+# Legacy DocFX / generated / design notes — not part of the Mintlify site
+_archive/
+_site/
+api/
+*.yml
+docfx.json
+releasing.md
+Vela-language.md
+Vela-collections.md
+index.md
+README.md

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 36" fill="none">
+  <path d="M6 28 L18 6 L30 28" stroke="#2DD4BF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10.5 19 H25.5" stroke="#5EEAD4" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="40" y="25" font-family="IBM Plex Sans, Segoe UI, sans-serif" font-size="22" font-weight="700" fill="#F0FDFA" letter-spacing="0.04em">Vela</text>
+</svg>

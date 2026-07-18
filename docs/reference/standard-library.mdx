@@ -1,0 +1,12 @@
+---
+title: Standard library
+description: Source-linked vela.std.* packages.
+---
+
+# Standard library
+
+Source packages under `packages/` compile with the application. They do not ship
+as separate native binaries.
+
+Prefer `vela.core.http` for servers. Keep `vela.std.http` for the small
+plaintext GET helper over TCP.

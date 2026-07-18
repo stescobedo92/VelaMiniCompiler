@@ -1,0 +1,27 @@
+---
+title: Installers & signing
+description: Release artifacts, PATH layout, and signing environment.
+---
+
+# Installers & signing
+
+Pushing a version tag such as `v0.3.0` runs **Release compiler**. Manual
+`workflow_dispatch` can build without publishing.
+
+## Layout
+
+Installers and portable archives include:
+
+- `vela` / `vela.exe`
+- `runtime/` — core runtime project
+- `ui-runtime/`, `http-runtime/`, `grpc-runtime/` — adapters
+- `global.json` — SDK pin
+
+## Signing
+
+Protected GitHub Environment `release` holds platform secrets. Tag releases
+publish even when signing credentials are incomplete (with a warning and
+SHA256SUMS + attestations). Manual `publish=true` still requires `sign=true`.
+
+Full secret table and install commands live in the repository
+`docs/releasing.md` archive companion.

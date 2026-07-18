@@ -1,0 +1,36 @@
+---
+title: GraphQL
+description: Mount a minimal GraphQL schema on an HTTP server.
+---
+
+# GraphQL
+
+Use `vela.core.graphql` with `vela.core.http`. The executor supports a tiny
+document subset such as `{ hello }` and `{ echo(text: "hi") }`.
+
+```vela
+include vela.core.http as http;
+include vela.core.graphql as gql;
+
+fn main() -> Int {
+    let schema = gql.create_schema();
+    gql.query(schema, "hello", fn() -> Text { return "\"world\""; });
+    let server = http.create_server("127.0.0.1", 8080);
+    gql.mount(server, "/graphql", schema);
+    return http.run(server);
+}
+```
+
+POST JSON to the mount path:
+
+```json
+{"query":"{ hello }"}
+```
+
+Response shape:
+
+```json
+{"data":{"hello":"world"}}
+```
+
+Field resolvers should return JSON literals (quoted strings, objects, numbers).

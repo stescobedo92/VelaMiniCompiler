@@ -1,0 +1,47 @@
+---
+title: First program
+description: Check, run, and publish a tiny Vela program.
+---
+
+# First program
+
+Save `hello.vela`:
+
+```vela
+include vela.core.console as console;
+
+fn main() -> Void {
+    console.write_line("Hello from Vela");
+}
+```
+
+## Check
+
+```powershell
+vela check hello.vela
+# or from the repo without installing:
+dotnet run --project src/Vela.Cli -- check hello.vela
+```
+
+## Run
+
+```powershell
+vela run hello.vela
+```
+
+## Publish native
+
+```powershell
+vela build hello.vela --output artifacts/hello
+```
+
+Windows produces `artifacts/hello/hello.exe`; Linux/macOS produce
+`artifacts/hello/hello`.
+
+## Pass program arguments
+
+Arguments after `--` belong to the program:
+
+```powershell
+vela run examples/packages/vela-cli-app -- --name Ada --json
+```

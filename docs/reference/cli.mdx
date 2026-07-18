@@ -1,0 +1,19 @@
+---
+title: CLI reference
+description: vela check, run, build, and related flags.
+---
+
+# CLI reference
+
+```text
+vela check <file|package>
+vela run <file|package> [-- program args]
+vela build <file|package> [--output dir] [--mode native-aot|single-file|framework-dependent]
+vela targets
+```
+
+Common flags: `--color auto|always|never`, verbosity / `--quiet`.
+
+`build` defaults to Native AOT. GUI/HTTP/gRPC programs force
+framework-dependent publish when AOT is requested, because those adapters are
+not AOT-trimmed in 0.3.0.

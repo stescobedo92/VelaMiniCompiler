@@ -1,14 +1,35 @@
 # Releasing and installing Vela
 
+Current release line: see root `VERSION` (0.3.0).
+
 The repository includes four GitHub Actions workflows:
 
 - `Continuous Integration` builds and tests Windows, Linux, and macOS for every
-  pull request and push to the primary branches.
-- `Documentation` builds the DocFX site and deploys GitHub Pages.
+  pull request and push to the primary branches (including UI/HTTP/gRPC adapter
+  tests and API examples).
+- `Documentation` validates the Mintlify site (`docs/docs.json`) and deploys a
+  GitHub Pages portal. Preview the full site locally with `npx mint@latest dev`
+  inside `docs/`.
 - `Package smoke tests` builds and exercises unsigned installers on every
   supported platform.
 - `Release compiler` produces Native AOT compiler binaries and installation
-  artifacts when a version tag such as `v0.2.0` is pushed.
+  artifacts when a version tag such as `v0.3.0` is pushed. The tag must match
+  the `VERSION` file. Manual `workflow_dispatch` can omit the version input to
+  read `VERSION`.
+
+## Ship a new version
+
+1. Update `VERSION` and `CHANGELOG.md`.
+2. Land the changes on `master`/`main`.
+3. Create and push the annotated tag:
+
+```powershell
+pwsh -File .\eng\release\tag-version.ps1 -Push
+```
+
+4. Confirm the `Release compiler` workflow published GitHub Release assets
+   (including staged `http-runtime/` and `grpc-runtime/`).
+5. Confirm the `Documentation` workflow redeployed the Pages portal.
 
 A tag-triggered release always publishes the generated artifacts. It signs them
 when every platform credential is available; otherwise the workflow emits an

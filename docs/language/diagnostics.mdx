@@ -1,0 +1,15 @@
+---
+title: Diagnostics
+description: Compiler phases, colors, and runtime error locations.
+---
+
+# Diagnostics & safety
+
+The CLI prints color-aware phases by default; use `--quiet` or `--color never`
+when scripting.
+
+Runtime faults (overflow, null, index, cast, cancellation) become Vela exceptions
+with source locations when lowered through the checked runtime helpers.
+
+Compiler codes such as `VEL3002` (type mismatch) and `VEL3030` (unsupported
+lambda shape) point at the offending span.

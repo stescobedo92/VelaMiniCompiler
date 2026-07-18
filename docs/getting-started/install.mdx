@@ -1,0 +1,46 @@
+---
+title: Install
+description: Put vela on your PATH from source or a GitHub release.
+---
+
+# Install Vela
+
+## Local developer install (recommended while hacking)
+
+From a clone of this repository:
+
+```powershell
+pwsh -File .\eng\install-local.ps1
+```
+
+```bash
+./eng/install-local.sh
+```
+
+Windows publishes under `%LOCALAPPDATA%\Vela\bin`. macOS/Linux use
+`~/.local/lib/vela` with a symlink at `~/.local/bin/vela`. Open a new terminal,
+then:
+
+```bash
+vela --help
+```
+
+## Release installers
+
+Tag releases (`v0.3.0`, …) publish platform artifacts from GitHub Actions:
+
+| Platform | Packages |
+| --- | --- |
+| Windows | `.msi`, graphical `-setup.exe`, portable `.zip` |
+| macOS | `.pkg`, `.dmg`, portable `.tar.gz` |
+| Linux | `.deb`, `.rpm`, portable `.tar.gz` |
+
+Installers stage `runtime/`, `ui-runtime/`, `http-runtime/`, and `grpc-runtime/`
+so generated programs can reference adapter projects outside the repo.
+
+See [Installers & signing](/release/installers) for credentials and PATH layout.
+
+## Prerequisites for building from source
+
+- .NET SDK pinned by `global.json` (currently 10.0.201)
+- Native AOT toolchain on the host when publishing native binaries

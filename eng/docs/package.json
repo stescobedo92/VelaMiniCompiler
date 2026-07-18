@@ -1,0 +1,8 @@
+{
+  "name": "vela-docs-pages",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "marked": "^15.0.12"
+  }
+}

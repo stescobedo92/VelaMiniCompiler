@@ -1,0 +1,45 @@
+---
+title: REST APIs
+description: Host JSON HTTP APIs with vela.core.http.
+---
+
+# REST APIs
+
+`vela.core.http` starts a Kestrel server and maps routes to Vela lambdas.
+Handlers return response body text (typically JSON).
+
+```vela
+include vela.core.http as http;
+include vela.core.console as console;
+
+fn main() -> Int {
+    let server = http.create_server("127.0.0.1", 0);
+    http.get(server, "/health", fn() -> Text {
+        return "{\"ok\":true}";
+    });
+    http.post(server, "/echo", fn(body: Text) -> Text {
+        return body;
+    });
+    let port = http.start(server);
+    console.write_line(http.client_get("127.0.0.1", port, "/health"));
+    http.stop(server);
+    return 0;
+}
+```
+
+## API surface
+
+| Call | Role |
+| --- | --- |
+| `create_server(host, port)` | Port `0` = ephemeral |
+| `get` / `post` / `put` / `delete` | Register routes |
+| `start` / `run` / `stop` | Lifecycle |
+| `client_get` / `client_post` | Loopback helpers |
+| `set_max_body` | Body size limit |
+
+Importing this module sets `RequiresHttp` and references `Vela.Http.Runtime`.
+
+<Warning>
+  TLS, OpenAPI generation, and middleware chains are planned — not part of 0.3.0.
+  Loopback HTTP is the supported surface today.
+</Warning>

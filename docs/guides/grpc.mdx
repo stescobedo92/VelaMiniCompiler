@@ -1,0 +1,30 @@
+---
+title: gRPC
+description: Unary gRPC methods via vela.core.grpc.
+---
+
+# gRPC
+
+`vela.core.grpc` hosts HTTP/2 gRPC using a shared `vela.rpc.VelaRpc` service.
+You map fully-qualified method names to handlers that take/return `Text`.
+
+```vela
+include vela.core.grpc as grpc;
+include vela.core.console as console;
+
+fn main() -> Int {
+    let server = grpc.create_server("127.0.0.1", 0);
+    grpc.map(server, "hello.Greeter/SayHello", fn(request: Text) -> Text {
+        return "{\"message\":\"Hello " + request + "\"}";
+    });
+    let port = grpc.start(server);
+    console.write_line(
+        grpc.client_call("127.0.0.1", port, "hello.Greeter/SayHello", "Ada")
+    );
+    grpc.stop(server);
+    return 0;
+}
+```
+
+External clients should use the proto in
+`src/Vela.Grpc.Runtime/Protos/vela_rpc.proto` (`Call` with `method` + `body`).

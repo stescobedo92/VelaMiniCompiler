@@ -1,0 +1,20 @@
+---
+title: Core modules
+description: Opt-in vela.core.* surfaces.
+---
+
+# Core modules
+
+| Module | Purpose |
+| --- | --- |
+| `console` | stdout/stderr writes |
+| `io` / `env` / `system` | files, environment, process exec |
+| `json` / `text` / `encoding` / `crypto` | data & security helpers |
+| `tcp` | bounded TCP |
+| `gui` | Avalonia desktop UI |
+| `http` / `graphql` | REST + GraphQL hosting |
+| `grpc` | unary gRPC hosting |
+| `vela.concurrent` | concurrency primitives |
+
+Importing `gui`, `http`/`graphql`, or `grpc` pulls the matching adapter project
+into the generated `.csproj`.

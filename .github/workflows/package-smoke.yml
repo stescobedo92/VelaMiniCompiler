@@ -20,7 +20,7 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   MSBuildEnableWorkloadResolver: false
-  VERSION: 0.0.0
+  VERSION: 0.3.0
 
 jobs:
   windows:

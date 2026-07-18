@@ -1,0 +1,28 @@
+---
+title: Packages
+description: Source libraries and the standard CLI/logging packages.
+---
+
+# Packages
+
+Vela applications can `include` source-linked packages declared in `vela.toml`.
+
+```toml
+[package]
+name = "my-app"
+version = "0.1.0"
+kind = "application"
+
+[dependencies]
+vela.std.cli = { path = "../../../packages/vela.std.cli" }
+```
+
+Shipped std packages:
+
+- `vela.std.cli` — typed commands and options
+- `vela.std.log` — leveled logging
+- `vela.std.config` — env/JSON config helpers
+- `vela.std.http` — bounded plaintext HTTP/1.1 **client** over TCP
+
+Hosted REST/GraphQL/gRPC use **core modules** (`vela.core.http`, …), not the
+plaintext client package.

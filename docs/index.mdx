@@ -1,0 +1,45 @@
+---
+title: Vela
+description: Native-first language and compiler for desktop GUI and networked APIs.
+---
+
+# Build native tools with a clear surface
+
+Vela is a statically checked language with familiar braces, checked arithmetic,
+source-aware runtime errors, and Native AOT output. Version **0.3.0** adds
+cross-platform GUI plus REST, GraphQL, and gRPC adapters.
+
+```vela
+include vela.core.console as console;
+
+fn main() -> Void {
+    console.write_line("Hello from Vela 0.3");
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Install" icon="download" href="/getting-started/install">
+    Get `vela` on your PATH with a local or release installer.
+  </Card>
+  <Card title="Desktop GUI" icon="app-window" href="/guides/gui">
+    Avalonia-backed forms, callbacks, lists, menus, and rich controls.
+  </Card>
+  <Card title="REST & GraphQL" icon="globe" href="/guides/rest">
+    Host JSON APIs on Kestrel with typed Vela handlers.
+  </Card>
+  <Card title="gRPC" icon="network" href="/guides/grpc">
+    Map unary methods by name and call them from Vela.
+  </Card>
+</CardGroup>
+
+## Why Vela
+
+- Native AOT applications with a compact, trimmable runtime.
+- Checked overflow, indexes, null access, casts, and boxing.
+- Explicit opt-in modules — import only what you need.
+- Adapter isolation: GUI / HTTP / gRPC stay out of the core runtime until used.
+
+<Note>
+  Vela is experimental. Docs describe what ships in 0.3.0; planned platform work
+  (Uno UI packages, TLS OpenAPI, registries) lives in design notes, not as shipped APIs.
+</Note>

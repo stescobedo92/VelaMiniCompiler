@@ -1,0 +1,38 @@
+---
+title: Desktop GUI
+description: Avalonia-backed vela.core.gui components and callbacks.
+---
+
+# Desktop GUI
+
+Importing `vela.core.gui` links `Vela.Ui.Runtime` into the generated project.
+
+```vela
+include vela.core.gui as gui;
+
+fn main() -> Int {
+    let form = gui.create_form_layout("Demo", 420, 320, "column");
+    let box = gui.add_textbox(form, "Ada", 0, 0, 200, 28);
+    let button = gui.add_button(form, "Say hi", 0, 0, 100, 32);
+    gui.on_click(button, fn() -> Void {
+        gui.show_message("Hello", gui.get_text(box));
+    });
+    return gui.run(form);
+}
+```
+
+## Controls
+
+Forms: `create_form`, `create_form_layout(..., "column"|"row"|"grid")`, `run`.
+
+Widgets: `add_label`, `add_button`, `add_textbox`, `add_textarea`, `add_checkbox`,
+`add_radio`, `add_progress`, `add_slider`, `add_numeric`, `add_combo`, `add_list`,
+`add_grid`, `add_separator`.
+
+Callbacks: `on_click`, `on_text_changed`, `on_checked_changed`, `on_value_changed`.
+
+Menus/files: `add_menu_item`, `open_file`, `save_file`.
+
+## Headless
+
+Set `VELA_UI_HEADLESS=1` to skip window creation (CI-friendly).

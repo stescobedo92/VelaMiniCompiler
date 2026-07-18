@@ -1,0 +1,28 @@
+---
+title: Language tour
+description: Types, classes, match, async, and modules.
+---
+
+# Language tour
+
+Vela uses brace-based syntax with mandatory primary constructors on classes,
+checked arithmetic, and exhaustive `match` for enums / `Option` / `Result`.
+
+```vela
+record Point(x: Int, y: Int);
+
+fn length_sq(p: Point) -> Int {
+    return p.x * p.x + p.y * p.y;
+}
+```
+
+Highlights:
+
+- Numeric types: `Int`, `UInt`, `Long`, `Float`, `Double`, `Decimal`
+- `Text`, `Bool`, collections (`List`/`Vector`, `HashMap`, …)
+- `async fn` + `await` + `Cancellation`
+- `include vela.core.<module> as alias;`
+- Lambdas: Void UI callbacks and `Text`-returning API handlers
+
+Full grammar notes remain in the repository file `docs/Vela-language.md`
+(DocFX/API archive companion).

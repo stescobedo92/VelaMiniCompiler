@@ -1,0 +1,30 @@
+---
+title: Examples
+description: Representative programs in the repository.
+---
+
+# Examples
+
+Run any single-file example:
+
+```powershell
+vela run examples/api-rest.vela
+```
+
+| Example | Topic |
+| --- | --- |
+| `void-functions.vela` | Console + Void helpers |
+| `ui-studio.vela` | GUI layouts, menus, lists |
+| `ui-rich-controls.vela` | Slider, textarea, numeric, radio |
+| `api-rest.vela` | REST loopback server |
+| `api-graphql.vela` | GraphQL over HTTP |
+| `api-grpc.vela` | Unary gRPC map + client |
+| `packages/vela-cli-app` | `vela.std.cli` |
+| `packages/vela-http-app` | Legacy plaintext HTTP client package |
+
+For GUI CI or headless smoke tests:
+
+```powershell
+$env:VELA_UI_HEADLESS = '1'
+vela run examples/ui-rich-controls.vela
+```

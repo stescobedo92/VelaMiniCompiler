@@ -1,0 +1,113 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "linden",
+  "name": "Vela",
+  "description": "Native-first language and compiler — GUI, REST, GraphQL, and gRPC.",
+  "colors": {
+    "primary": "#0F766E",
+    "light": "#2DD4BF",
+    "dark": "#134E4A"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg",
+    "href": "/"
+  },
+  "appearance": {
+    "default": "system"
+  },
+  "fonts": {
+    "family": "IBM Plex Sans",
+    "heading": "IBM Plex Sans"
+  },
+  "icons": {
+    "library": "lucide"
+  },
+  "background": {
+    "decoration": "grid"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/stescobedo92/VelaMiniCompiler"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Install",
+      "href": "/getting-started/install"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/stescobedo92/VelaMiniCompiler"
+    }
+  },
+  "navigation": {
+    "versions": [
+      {
+        "version": "0.3.0",
+        "default": true,
+        "tag": "Latest",
+        "groups": [
+          {
+            "group": "Start",
+            "pages": [
+              "index",
+              "getting-started/install",
+              "getting-started/first-program",
+              "getting-started/examples"
+            ]
+          },
+          {
+            "group": "Language",
+            "pages": [
+              "language/tour",
+              "language/collections",
+              "language/diagnostics"
+            ]
+          },
+          {
+            "group": "Build apps",
+            "pages": [
+              "guides/gui",
+              "guides/rest",
+              "guides/graphql",
+              "guides/grpc",
+              "guides/packages"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/cli",
+              "reference/core-modules",
+              "reference/standard-library",
+              "reference/architecture"
+            ]
+          },
+          {
+            "group": "Release",
+            "pages": [
+              "release/installers",
+              "release/changelog"
+            ]
+          }
+        ]
+      },
+      {
+        "version": "0.2.0",
+        "groups": [
+          {
+            "group": "Start",
+            "pages": [
+              "versions/0.2/index"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

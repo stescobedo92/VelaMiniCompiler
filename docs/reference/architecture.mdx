@@ -1,0 +1,17 @@
+---
+title: Architecture
+description: Compiler pipeline and adapter isolation.
+---
+
+# Architecture
+
+```text
+Vela source → parse (Vela.Core) → emit C# (Vela.Backend)
+           → generated project + Vela.Runtime
+           → optional adapters (Ui / Http / Grpc)
+           → dotnet publish
+```
+
+Heavy frameworks stay in adapter projects selected by import flags
+(`RequiresGui`, `RequiresHttp`, `RequiresGrpc`). The installed compiler layout
+stages those projects next to `runtime/` so programs work outside the monorepo.

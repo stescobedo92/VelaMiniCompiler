@@ -7,16 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version in X.Y.Z or vX.Y.Z format"
-        required: true
+        description: "Release version (X.Y.Z or vX.Y.Z). Leave empty to use ./VERSION"
+        required: false
         type: string
+        default: ""
       sign:
-        description: "Sign artifacts. Required when publishing a release."
+        description: "Sign artifacts when credentials are configured."
         required: true
         default: false
         type: boolean
       publish:
-        description: "Create a GitHub Release. Requires signing."
+        description: "Create a GitHub Release (tag push always publishes)."
         required: true
         default: false
         type: boolean
@@ -39,6 +40,9 @@ jobs:
       sign: ${{ steps.release.outputs.sign }}
       publish: ${{ steps.release.outputs.publish }}
     steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
       - id: release
         name: Validate version and release mode
         shell: bash
@@ -57,8 +61,11 @@ jobs:
             sign=true
             publish=true
           else
-            version="$INPUT_VERSION"
+            version="${INPUT_VERSION:-}"
             version="${version#v}"
+            if [[ -z "$version" ]]; then
+              version="$(tr -d '[:space:]' < VERSION)"
+            fi
             sign="$INPUT_SIGN"
             publish="$INPUT_PUBLISH"
           fi
@@ -68,8 +75,17 @@ jobs:
             exit 1
           fi
 
-          if [[ "$publish" == "true" && "$sign" != "true" ]]; then
-            echo "Publishing an unsigned release is forbidden." >&2
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$EVENT_NAME" == "push" && "$version" != "$file_version" ]]; then
+            echo "Tag version '$version' does not match VERSION file '$file_version'." >&2
+            exit 1
+          fi
+
+          # Tag pushes may publish unsigned when signing secrets are incomplete.
+          # Manual publish still requires an explicit sign request; preflight may
+          # still degrade to unsigned for tag events only.
+          if [[ "$EVENT_NAME" != "push" && "$publish" == "true" && "$sign" != "true" ]]; then
+            echo "Publishing an unsigned release via workflow_dispatch is forbidden." >&2
             exit 1
           fi
 
@@ -364,6 +380,9 @@ jobs:
       TAG: ${{ needs.prepare.outputs.tag }}
       SIGNED: ${{ needs.signing_preflight.outputs.sign }}
     steps:
+      - name: Check out source for release notes
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
       - name: Download release artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -380,19 +399,36 @@ jobs:
       - name: Create GitHub Release
         shell: bash
         run: |
-          release_args=()
-          if [[ "$SIGNED" != "true" ]]; then
-            warning='> [!WARNING]
-          > These artifacts do not have platform code signatures. Verify `SHA256SUMS` and the GitHub provenance attestations before use.'
-            release_args+=(--notes "$warning")
-          fi
+          notes_file="$(mktemp)"
+          {
+            if [[ -f CHANGELOG.md ]]; then
+              # Emit the matching changelog section when present.
+              awk -v ver="$VERSION" '
+                BEGIN { show=0 }
+                $0 ~ "^## " ver { show=1; print; next }
+                show && $0 ~ /^## / { exit }
+                show { print }
+              ' CHANGELOG.md
+              echo
+            fi
+            if [[ "$SIGNED" != "true" ]]; then
+              cat <<'EOF'
+          > [!WARNING]
+          > These artifacts do not have platform code signatures. Verify `SHA256SUMS` and the GitHub provenance attestations before use.
+          EOF
+              echo
+            fi
+            echo "### Adapters staged with the compiler"
+            echo "- \`runtime/\`, \`ui-runtime/\`, \`http-runtime/\`, \`grpc-runtime/\`, \`global.json\`"
+            echo
+            echo "Docs: run \`npx mint@latest dev\` in \`docs/\` or open the GitHub Pages portal."
+          } > "$notes_file"
 
           gh release create "$TAG" release/* \
             --verify-tag \
             --title "Vela $VERSION" \
-            --generate-notes \
-            --repo "$GITHUB_REPOSITORY" \
-            "${release_args[@]}"
+            --notes-file "$notes_file" \
+            --repo "$GITHUB_REPOSITORY"
 
   linux:
     name: Linux x64

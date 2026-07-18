@@ -268,20 +268,16 @@ fn main() -> Void {
 }
 ```
 
-Read [the language guide](docs/Vela-language.md) for grammar and semantic rules,
-and [the collection guide](docs/Vela-collections.md) for collection APIs and
-complexity guarantees.
-
-Build and preview the searchable DocFX site locally:
+Preview the Mintlify docs locally (version **0.3.0**):
 
 ```powershell
-dotnet tool restore
-dotnet docfx docs/docfx.json --serve
+cd docs
+npx mint@latest dev
 ```
 
-The site covers installation, language rules, modules, the standard library,
-diagnostics, architecture, performance, examples, and generated public
-compiler/runtime APIs.
+Open http://localhost:3000 — guides cover install, GUI, REST, GraphQL, gRPC, and
+release notes. Legacy DocFX materials are under `docs/_archive/`; design plans
+live in `design/superpowers/`.
 
 ## Status
 
