@@ -16,6 +16,11 @@ worst-case guarantees for hash tables.
 | `Stack<T>` | contiguous stack | `push`, `pop`, `peek` O(1) amortized | capacity expansion can copy elements |
 | `RingBuffer<T>` | fixed circular array | `try_enqueue`, `dequeue`, `peek` O(1) | never grows; enqueue returns `false` when full |
 | `BitSet` | packed 64-bit words | `set`, `clear`, `contains` O(1) | `reserve` can copy packed words |
+| `SortedMap<K, V>` | balanced search tree | `set`, `try_get`, `remove` O(log n); `first_key`/`last_key` O(log n) | keys must have a defined ordering |
+| `SortedSet<T>` | balanced search tree | `add`, `contains`, `remove` O(log n); iteration is ascending | values must have a defined ordering |
+| `Deque<T>` | growable circular array | `push_front`, `push_back`, `pop_front`, `pop_back` O(1) amortized | growth or `reserve` can copy O(n) items |
+| `PriorityQueue<T>` | binary min-heap | `push`, `pop` O(log n); `peek` O(1) | serves the smallest value first; values need a defined ordering |
+| `LinkedList<T>` | doubly linked list | `push_front`, `push_back`, `pop_front`, `pop_back` O(1) | `contains` and `remove` by value are O(n); nodes are not contiguous |
 
 `HashMap` and `HashSet` use ordinal equality for `Text`. Hash keys must be a
 primitive value, immutable record, `Option<T>`, or `Result<T, E>`; mutable
@@ -101,11 +106,77 @@ Queue and stack removal and peek operations return `Option<T>`. `RingBuffer`
 does not allocate after construction. `BitSet` uses `reserve` to increase its
 addressable range; accessing a bit outside `capacity` raises a Vela bounds error.
 
+## Ordered collections
+
+`SortedMap`, `SortedSet`, and `PriorityQueue` mirror the ordered containers of
+C++ (`std::map`, `std::set`, `std::priority_queue`), Java (`TreeMap`, `TreeSet`,
+`PriorityQueue`), and Rust (`BTreeMap`, `BTreeSet`, `BinaryHeap`). Ordering keys
+and elements must be a numeric type, `Bool`, or `Text`; `Text` is ordered by
+ordinal comparison, so ordering is deterministic across platforms and locales.
+
+`SortedMap` and `SortedSet` take no constructor arguments. `PriorityQueue`
+accepts an optional capacity and always serves the smallest value first (a
+min-heap). To get max-heap behavior, negate numeric priorities on insert.
+
+```vela
+var releases = SortedMap<Text, Int>();
+releases.set("0.3.0", 2026);
+releases["0.1.0"] = 2025;
+
+let oldest = releases.first_key();
+if oldest.has_value {
+    print(oldest.value);
+}
+
+var levels = SortedSet<Int>();
+if levels.add(10) {
+    print("new level");
+}
+
+var work = PriorityQueue<Int>(64);
+work.push(5);
+work.push(1);
+let urgent = work.pop(); // Some(1): smallest first
+```
+
+`SortedMap` methods are `set`, `try_get`, `contains`, `remove`, `first_key`,
+`last_key`, and `clear`, plus indexed reads and writes. `SortedSet` methods are
+`add`, `contains`, `remove`, `first`, `last`, and `clear`. `PriorityQueue`
+methods are `push`, `pop`, `peek`, `reserve`, and `clear`.
+
+## Deques and linked lists
+
+`Deque` mirrors C++ `std::deque`, Java `ArrayDeque`, and Rust `VecDeque`;
+`LinkedList` mirrors C++ `std::list`, Java `LinkedList`, and Rust `LinkedList`.
+
+```vela
+var window = Deque<Text>();
+window.push_back("b");
+window.push_front("a");
+let front = window.pop_front(); // Some("a")
+let back = window.peek_back();  // Some("b")
+
+var history = LinkedList<Text>();
+history.push_back("open");
+history.push_back("save");
+if history.remove("open") {
+    print("removed");
+}
+```
+
+`Deque` methods are `push_front`, `push_back`, `pop_front`, `pop_back`,
+`peek_front`, `peek_back`, `reserve`, and `clear`. `LinkedList` methods are
+`push_front`, `push_back`, `pop_front`, `pop_back`, `peek_front`, `peek_back`,
+`contains`, `remove`, and `clear`. Prefer `Deque` unless you specifically need
+O(1) removal of already-located nodes; contiguous storage is faster in practice.
+
 ## Iteration
 
-Vectors, hash sets, queues, stacks, and ring buffers support `for`. Hash maps
-and bit sets do not yet expose a Vela iteration element type; use their lookup
-APIs instead.
+Vectors, hash sets, sorted sets, queues, stacks, ring buffers, deques, and
+linked lists support `for`. Sorted sets iterate in ascending order; deques and
+linked lists iterate from front to back. Hash maps, sorted maps, priority
+queues, and bit sets do not yet expose a Vela iteration element type; use their
+lookup APIs instead.
 
 ```vela
 for value in values {

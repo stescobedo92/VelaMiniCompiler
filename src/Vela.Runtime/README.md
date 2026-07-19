@@ -30,7 +30,10 @@ FileStream stream = scope.Track(File.OpenRead("input.txt"));
 
 The runtime also provides Native AOT-safe collection implementations for Vela:
 `VelaVector<T>`, `VelaHashMap<TKey, TValue>`, `VelaHashSet<T>`, `VelaQueue<T>`,
-`VelaStack<T>`, `RingBuffer<T>`, and `BitSet`. They use managed arrays or .NET
-generic collections, have no reflection dependency, and expose `Option<T>` for
-empty removal and lookup operations. The compiler emits calls to these known
-APIs rather than dynamically resolving user-provided members.
+`VelaStack<T>`, `RingBuffer<T>`, `BitSet`, `VelaSortedMap<TKey, TValue>`,
+`VelaSortedSet<T>`, `VelaDeque<T>`, `VelaPriorityQueue<T>`, and
+`VelaLinkedList<T>`. They use managed arrays or .NET generic collections, have
+no reflection dependency, and expose `Option<T>` for empty removal and lookup
+operations. Ordered collections compare `Text` ordinally for deterministic
+cross-platform ordering. The compiler emits calls to these known APIs rather
+than dynamically resolving user-provided members.

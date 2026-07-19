@@ -1,0 +1,52 @@
+include vela.core;
+
+fn main() -> Void {
+    // SortedMap keeps keys ordered; comparable to C++ std::map / Java TreeMap / Rust BTreeMap.
+    var scores = SortedMap<Text, Int>();
+    scores.set("mira", 91);
+    scores.set("ada", 97);
+    scores["zoe"] = 84;
+    match scores.first_key() {
+        case Some(first) { print("first key: " + first); }
+        case None { print("empty map"); }
+    }
+    print(scores.try_get("ada").value);
+    print(scores.count);
+
+    // SortedSet iterates in ascending order; comparable to std::set / TreeSet / BTreeSet.
+    var levels = SortedSet<Int>();
+    print(levels.add(30));
+    print(levels.add(10));
+    print(levels.add(20));
+    for level in levels {
+        print(level);
+    }
+    print(levels.last().value);
+
+    // Deque supports O(1) push/pop at both ends; comparable to std::deque / ArrayDeque / VecDeque.
+    var window = Deque<Text>();
+    window.push_back("b");
+    window.push_front("a");
+    window.push_back("c");
+    print(window.pop_front().value);
+    print(window.peek_back().value);
+    print(window.count);
+
+    // PriorityQueue is a binary min-heap; comparable to std::priority_queue / BinaryHeap.
+    var tasks = PriorityQueue<Int>(8);
+    tasks.push(5);
+    tasks.push(1);
+    tasks.push(3);
+    print(tasks.pop().value);
+    print(tasks.peek().value);
+
+    // LinkedList offers O(1) insertion at both ends and O(n) value removal.
+    var history = LinkedList<Text>();
+    history.push_back("open");
+    history.push_back("edit");
+    history.push_back("save");
+    print(history.remove("edit"));
+    for entry in history {
+        print(entry);
+    }
+}

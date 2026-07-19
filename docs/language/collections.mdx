@@ -9,6 +9,10 @@ description: Host-native collection performance expectations.
 | --- | --- |
 | `Vector` / `List` | Contiguous; indexing O(1) |
 | `HashMap` / `HashSet` | Expected O(1) lookup/insert/remove |
+| `SortedMap` / `SortedSet` | Key-ordered; O(log n) lookup/insert/remove |
 | `Queue` / `Stack` / `RingBuffer` / `BitSet` | Explicit capacity/bounds behavior |
+| `Deque` | O(1) amortized push/pop at both ends |
+| `PriorityQueue` | Binary min-heap; O(log n) push/pop |
+| `LinkedList` | Doubly linked; O(1) ends, O(n) value removal |
 
 See `docs/Vela-collections.md` for the detailed collection guide.
