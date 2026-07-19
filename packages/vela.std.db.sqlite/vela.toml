@@ -1,0 +1,4 @@
+[package]
+name = "vela.std.db.sqlite"
+version = "0.1.0"
+kind = "source-library"

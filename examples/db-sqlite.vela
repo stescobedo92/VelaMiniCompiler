@@ -1,0 +1,11 @@
+include vela.core;
+include vela.core.sqlite as db;
+
+fn main() -> Void {
+    let database = db.open(":memory:");
+    defer db.close(database);
+    db.execute(database, "create table notes(id integer primary key, body text not null);");
+    db.execute(database, "insert into notes(body) values ('hello vela');");
+    let rows = db.query(database, "select id, body from notes order by id;");
+    print(rows);
+}

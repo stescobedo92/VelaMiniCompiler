@@ -1,0 +1,25 @@
+// Source-library stub for SQLite database access in Vela programs.
+//
+// Applications should `include vela.core.sqlite` in their manifest or source.
+// The compiler emitter maps `vela.core.sqlite` to `Vela.Sqlite.Runtime` (Open,
+// Execute, Query, Migrate, Close). This package documents the Vela-facing API
+// surface; it does not embed the native SQLite adapter itself.
+
+/// Opens a SQLite database file or in-memory database.
+/// @param path File path, `:memory:`, or a full SQLite connection string.
+/// @returns An open database handle.
+fn sqlite_open(path: Text) -> SqliteDatabase;
+
+/// Executes DDL/DML and returns affected row count.
+fn sqlite_execute(database: SqliteDatabase, sql: Text) -> Int;
+
+/// Runs a SELECT and returns rows as a JSON array string.
+fn sqlite_query(database: SqliteDatabase, sql: Text) -> Text;
+
+/// Applies sorted `*.sql` migration files and records them in `_vela_migrations`.
+fn sqlite_migrate(database: SqliteDatabase, migrations_directory: Text) -> Unit;
+
+/// Closes the database connection.
+fn sqlite_close(database: SqliteDatabase) -> Unit;
+
+type SqliteDatabase = opaque;
