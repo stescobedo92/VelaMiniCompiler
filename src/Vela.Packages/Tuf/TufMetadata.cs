@@ -3,19 +3,25 @@ using System.Text.Json.Serialization;
 namespace Vela.Packages.Tuf;
 
 /// <summary>One artifact entry in signed targets metadata.</summary>
-public sealed record TufTargetFile(long Length, TufTargetHashes Hashes);
+public sealed record TufTargetFile(
+    [property: JsonPropertyName("length")] long Length,
+    [property: JsonPropertyName("hashes")] TufTargetHashes Hashes);
 
 /// <summary>Supported content hashes for a TUF target.</summary>
-public sealed record TufTargetHashes(string Sha256);
+public sealed record TufTargetHashes([property: JsonPropertyName("sha256")] string Sha256);
 
 /// <summary>Public key material for a simplified single-role TUF root.</summary>
-public sealed record TufPublicKey(string KeyType, TufKeyValue KeyVal);
+public sealed record TufPublicKey(
+    [property: JsonPropertyName("keytype")] string KeyType,
+    [property: JsonPropertyName("keyval")] TufKeyValue KeyVal);
 
 /// <summary>Base64-encoded public key bytes.</summary>
-public sealed record TufKeyValue(string Public);
+public sealed record TufKeyValue([property: JsonPropertyName("public")] string Public);
 
 /// <summary>Role delegation listing trusted key ids.</summary>
-public sealed record TufRoleDefinition(IReadOnlyList<string> KeyIds, int Threshold);
+public sealed record TufRoleDefinition(
+    [property: JsonPropertyName("keyids")] IReadOnlyList<string> KeyIds,
+    [property: JsonPropertyName("threshold")] int Threshold);
 
 /// <summary>Signed portion of root metadata.</summary>
 public sealed record TufRootSigned(

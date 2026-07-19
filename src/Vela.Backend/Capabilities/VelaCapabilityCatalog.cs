@@ -13,13 +13,6 @@ public sealed class VelaCapabilityCatalog
     private static readonly byte[] ProductionPublicKeySpki = Convert.FromBase64String(
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFhOsdpyxOZrT+AQU6qDT85zYLm6xdJy4e9ju1X4HCJ8fqGEVVraxbvVncrkogZmT2LQftrsicKKihD0wGFSjpg==");
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true,
-        ReadCommentHandling = JsonCommentHandling.Skip,
-        AllowTrailingCommas = false
-    };
-
     private readonly Dictionary<string, VelaCapability> _capabilities;
 
     private VelaCapabilityCatalog(IReadOnlyList<VelaCapability> capabilities)
@@ -55,7 +48,7 @@ public sealed class VelaCapabilityCatalog
         }
 
         var json = File.ReadAllText(path);
-        var document = JsonSerializer.Deserialize<VelaCapabilityCatalogDocument>(json, JsonOptions)
+        var document = JsonSerializer.Deserialize(json, VelaJsonSerializerContext.Default.VelaCapabilityCatalogDocument)
             ?? throw new VelaCapabilityException($"Capability catalog '{path}' is empty.");
 
         if (document.SchemaVersion != 1)

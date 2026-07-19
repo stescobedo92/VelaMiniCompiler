@@ -8,10 +8,6 @@ namespace Vela.Packages.Tuf;
 public static class TufVerifier
 {
     private const string ExpectedKeyType = "ecdsa-sha2-nistp256";
-    private static readonly JsonSerializerOptions MetadataOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
 
     /// <summary>Validates <paramref name="targetsJson"/> against <paramref name="rootJson"/> and returns the target map.</summary>
     public static IReadOnlyDictionary<string, TufTargetFile> VerifyTargets(string rootJson, string targetsJson)
@@ -21,9 +17,9 @@ public static class TufVerifier
 
         var rootBytes = Encoding.UTF8.GetBytes(rootJson);
         var targetsBytes = Encoding.UTF8.GetBytes(targetsJson);
-        var root = JsonSerializer.Deserialize<TufRootMetadata>(rootBytes, MetadataOptions)
+        var root = JsonSerializer.Deserialize(rootBytes, TufJsonContext.Default.TufRootMetadata)
             ?? throw new TufVerificationException("Root metadata is empty.");
-        var targets = JsonSerializer.Deserialize<TufTargetsMetadata>(targetsBytes, MetadataOptions)
+        var targets = JsonSerializer.Deserialize(targetsBytes, TufJsonContext.Default.TufTargetsMetadata)
             ?? throw new TufVerificationException("Targets metadata is empty.");
 
         ValidateSignedEnvelope(
