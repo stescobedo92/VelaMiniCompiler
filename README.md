@@ -299,7 +299,7 @@ fn main() -> Void {
 }
 ```
 
-Preview the Mintlify docs locally (version **0.3.0**):
+Preview the Mintlify docs locally (version **0.3.1**):
 
 ```powershell
 cd docs

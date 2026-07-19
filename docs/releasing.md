@@ -1,6 +1,6 @@
 # Releasing and installing Vela
 
-Current release line: see root `VERSION` (0.3.0).
+Current release line: see root `VERSION` (0.3.1).
 
 The repository includes four GitHub Actions workflows:
 
@@ -13,7 +13,7 @@ The repository includes four GitHub Actions workflows:
 - `Package smoke tests` builds and exercises unsigned installers on every
   supported platform.
 - `Release compiler` produces Native AOT compiler binaries and installation
-  artifacts when a version tag such as `v0.3.0` is pushed. The tag must match
+  artifacts when a version tag such as `v0.3.1` is pushed. The tag must match
   the `VERSION` file. Manual `workflow_dispatch` can omit the version input to
   read `VERSION`.
 

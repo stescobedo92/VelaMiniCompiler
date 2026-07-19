@@ -11,7 +11,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Structure
 
-- `docs.json` — site config, theme (Linden), version navigation for 0.3.0
+- `docs.json` — site config, theme (Linden), version navigation for 0.3.1
 - `getting-started/`, `guides/`, `language/`, `reference/`, `release/` — MDX pages
 - Legacy DocFX articles remain under `articles/` for archive; the Mintlify site is primary
 

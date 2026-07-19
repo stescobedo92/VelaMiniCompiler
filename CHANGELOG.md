@@ -2,15 +2,20 @@
 
 ## Unreleased
 
+## 0.3.1 — 2026-07-19
+
 ### Added
 - ABI import for `Text`/`Decimal`, C11 ABI headers, and ABI v2 ownership runtime
   (`VelaHandleTable`, `VelaAbiBuffer`, task handles).
-- Allowlisted SDK capability catalog (`eng/capabilities/vela-capabilities.json`).
+- Production ABI v2 export protocol: status codes, `out` buffers, and
+  `vela_buffer_release` lifecycle (legacy ABI v1 imports still supported).
+- ECDSA P-256 signed SDK capability catalog wired into generated project files.
 - Broader capturing lambdas / `Fn` values and function-value invocation.
 - SQLite and PostgreSQL adapters (`vela.core.sqlite` / `vela.core.postgres`) with
   migrations; TLS HTTP client helpers (`http.request_get` / `http.request_post`).
-- Package restore (`vela package restore`) via `Vela.Packages`, plus
-  `Vela.Registry.Server` MVP and `vela-lsp` language-server foundation.
+- Package restore (`vela package restore`) via `Vela.Packages`, optional TUF
+  root/targets verification, advanced SemVer ranges, plus `Vela.Registry.Server`
+  MVP, registry dogfood example, and `vela-lsp` language-server foundation.
 - `vela package` command group for the Vela gallery publish workflow:
   `pack` creates a reproducible `.vpkg` archive (embedded `vpkg.json` with
   SHA-256 file hashes, SemVer 2.0 validation, `--version` override), `login`
@@ -28,6 +33,11 @@
   with a defined ordering (numeric, `Bool`, or `Text` with ordinal comparison),
   reported at compile time as VEL3006.
 - `examples/collections-extended.vela` demonstrating the new collections.
+
+### Changed
+- `CSharpEmitter` split into focused partial modules (`Ffi`, `CoreModules`,
+  `Collections`, `Statements`, `Declarations`) without changing hot-path cost.
+- `global.json` rollForward set to `latestFeature` for .NET 10 SDK hosts.
 
 ## 0.3.0 — 2026-07-18
 
