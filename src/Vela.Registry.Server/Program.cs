@@ -50,6 +50,18 @@ app.MapGet("/packages/{name}/{version}/package.vlpkg", (string name, string vers
         : Results.NotFound();
 });
 
+app.MapGet("/tuf/root.json", () =>
+{
+    var path = Path.Combine(root, "tuf", "root.json");
+    return File.Exists(path) ? Results.File(path, "application/json") : Results.NotFound();
+});
+
+app.MapGet("/tuf/targets.json", () =>
+{
+    var path = Path.Combine(root, "tuf", "targets.json");
+    return File.Exists(path) ? Results.File(path, "application/json") : Results.NotFound();
+});
+
 app.MapPost("/packages/{name}/{version}", async (string name, string version, HttpRequest request) =>
 {
     var packageDirectory = Path.Combine(root, name, version);

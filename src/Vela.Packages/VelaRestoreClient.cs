@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using Vela.Packages.Tuf;
 
 namespace Vela.Packages;
 
@@ -121,6 +122,7 @@ public sealed class VelaRestoreClient : IDisposable
             var tempExtract = Path.Combine(Path.GetTempPath(), "vela-restore", Guid.NewGuid().ToString("N"));
             try
             {
+                VerifyArchiveIfTufPresent(root, packageName, version.ToString(), archivePath);
                 extractedPath = VelaDependencyArchive.Unpack(archivePath, tempExtract);
                 manifest = VelaPackageManifest.FromToml(Path.Combine(extractedPath, "vela.toml"));
                 var cached = _cache.StoreExtracted(packageName, version.ToString(), extractedPath);
@@ -176,6 +178,8 @@ public sealed class VelaRestoreClient : IDisposable
         try
         {
             await DownloadFileAsync(archiveUrl, tempArchive, cancellationToken).ConfigureAwait(false);
+            await VerifyArchiveIfTufPresentAsync(registryUri, packageName, versionText, tempArchive, cancellationToken)
+                .ConfigureAwait(false);
             _cache.StoreArchive(packageName, versionText, tempArchive);
             var extractedPath = VelaDependencyArchive.Unpack(tempArchive, tempExtract);
             var cached = _cache.StoreExtracted(packageName, versionText, extractedPath);
@@ -290,5 +294,78 @@ public sealed class VelaRestoreClient : IDisposable
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var file = File.Create(destinationPath);
         await stream.CopyToAsync(file, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void VerifyArchiveIfTufPresent(
+        string registryRoot,
+        string packageName,
+        string version,
+        string archivePath)
+    {
+        var rootPath = Path.Combine(registryRoot, "tuf", "root.json");
+        var targetsPath = Path.Combine(registryRoot, "tuf", "targets.json");
+        if (!File.Exists(rootPath) || !File.Exists(targetsPath))
+        {
+            return;
+        }
+
+        try
+        {
+            var targets = TufVerifier.VerifyTargets(
+                File.ReadAllText(rootPath),
+                File.ReadAllText(targetsPath));
+            VerifyArchiveAgainstTargets(targets, packageName, version, archivePath);
+        }
+        catch (TufVerificationException ex)
+        {
+            throw new VelaRegistryRestoreException(ex.Message);
+        }
+    }
+
+    private async Task VerifyArchiveIfTufPresentAsync(
+        Uri registryUri,
+        string packageName,
+        string version,
+        string archivePath,
+        CancellationToken cancellationToken)
+    {
+        var rootUrl = new Uri(registryUri, "tuf/root.json");
+        var targetsUrl = new Uri(registryUri, "tuf/targets.json");
+        string rootJson;
+        string targetsJson;
+        try
+        {
+            rootJson = await DownloadStringAsync(rootUrl, cancellationToken).ConfigureAwait(false);
+            targetsJson = await DownloadStringAsync(targetsUrl, cancellationToken).ConfigureAwait(false);
+        }
+        catch (VelaRegistryRestoreException)
+        {
+            return;
+        }
+
+        try
+        {
+            var targets = TufVerifier.VerifyTargets(rootJson, targetsJson);
+            VerifyArchiveAgainstTargets(targets, packageName, version, archivePath);
+        }
+        catch (TufVerificationException ex)
+        {
+            throw new VelaRegistryRestoreException(ex.Message);
+        }
+    }
+
+    private static void VerifyArchiveAgainstTargets(
+        IReadOnlyDictionary<string, TufTargetFile> targets,
+        string packageName,
+        string version,
+        string archivePath)
+    {
+        var targetPath = TufVerifier.BuildArchiveTargetPath(packageName, version);
+        if (!targets.TryGetValue(targetPath, out var target))
+        {
+            throw new VelaRegistryRestoreException($"TUF targets metadata does not list '{targetPath}'.");
+        }
+
+        TufVerifier.VerifyArchive(archivePath, target);
     }
 }

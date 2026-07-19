@@ -74,32 +74,30 @@ public sealed partial class SemVer : IComparable<SemVer>, IEquatable<SemVer>
         ArgumentException.ThrowIfNullOrWhiteSpace(range);
         range = range.Trim();
 
-        if (range is "*" or "latest")
+        if (range.Contains("||", StringComparison.Ordinal))
         {
-            return true;
+            var start = 0;
+            while (start <= range.Length)
+            {
+                var separator = range.IndexOf("||", start, StringComparison.Ordinal);
+                var segment = separator >= 0 ? range[start..separator] : range[start..];
+                if (SatisfiesAndGroup(version, segment.Trim()))
+                {
+                    return true;
+                }
+
+                if (separator < 0)
+                {
+                    break;
+                }
+
+                start = separator + 2;
+            }
+
+            return false;
         }
 
-        if (range.StartsWith('^'))
-        {
-            var baseline = Parse(range[1..]);
-            return version.Major == baseline.Major
-                && Compare(version, baseline) >= 0;
-        }
-
-        if (range.StartsWith('~'))
-        {
-            var baseline = Parse(range[1..]);
-            return version.Major == baseline.Major
-                && version.Minor == baseline.Minor
-                && version.Patch >= baseline.Patch;
-        }
-
-        if (range.StartsWith(">=", StringComparison.Ordinal))
-        {
-            return Compare(version, Parse(range[2..])) >= 0;
-        }
-
-        return version.Equals(Parse(range));
+        return SatisfiesAndGroup(version, range);
     }
 
     /// <inheritdoc />
@@ -160,6 +158,110 @@ public sealed partial class SemVer : IComparable<SemVer>, IEquatable<SemVer>
 
     /// <summary>Determines whether <paramref name="left"/> is greater than or equal to <paramref name="right"/>.</summary>
     public static bool operator >=(SemVer left, SemVer right) => Compare(left, right) >= 0;
+
+    private static bool SatisfiesAndGroup(SemVer version, string range)
+    {
+        foreach (var clause in SplitAndClauses(range))
+        {
+            if (!SatisfiesClause(version, clause))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static IEnumerable<string> SplitAndClauses(string range)
+    {
+        if (range.Contains(" - ", StringComparison.Ordinal))
+        {
+            yield return range;
+            yield break;
+        }
+
+        var start = 0;
+        while (start < range.Length)
+        {
+            while (start < range.Length && range[start] == ' ')
+            {
+                start++;
+            }
+
+            if (start >= range.Length)
+            {
+                yield break;
+            }
+
+            var end = start;
+            while (end < range.Length && range[end] != ' ')
+            {
+                end++;
+            }
+
+            yield return range[start..end];
+            start = end + 1;
+        }
+    }
+
+    private static bool SatisfiesClause(SemVer version, string clause)
+    {
+        clause = clause.Trim();
+        if (clause.Length == 0)
+        {
+            return true;
+        }
+
+        if (clause is "*" or "latest")
+        {
+            return true;
+        }
+
+        var hyphenIndex = clause.IndexOf(" - ", StringComparison.Ordinal);
+        if (hyphenIndex >= 0)
+        {
+            var lower = Parse(clause[..hyphenIndex].Trim());
+            var upper = Parse(clause[(hyphenIndex + 3)..].Trim());
+            return Compare(version, lower) >= 0 && Compare(version, upper) <= 0;
+        }
+
+        if (clause.StartsWith('^'))
+        {
+            var baseline = Parse(clause[1..]);
+            return version.Major == baseline.Major
+                && Compare(version, baseline) >= 0;
+        }
+
+        if (clause.StartsWith('~'))
+        {
+            var baseline = Parse(clause[1..]);
+            return version.Major == baseline.Major
+                && version.Minor == baseline.Minor
+                && version.Patch >= baseline.Patch;
+        }
+
+        if (clause.StartsWith(">=", StringComparison.Ordinal))
+        {
+            return Compare(version, Parse(clause[2..])) >= 0;
+        }
+
+        if (clause.StartsWith("<=", StringComparison.Ordinal))
+        {
+            return Compare(version, Parse(clause[2..])) <= 0;
+        }
+
+        if (clause.StartsWith('>'))
+        {
+            return Compare(version, Parse(clause[1..])) > 0;
+        }
+
+        if (clause.StartsWith('<'))
+        {
+            return Compare(version, Parse(clause[1..])) < 0;
+        }
+
+        return version.Equals(Parse(clause));
+    }
 
     [GeneratedRegex(@"^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)$", RegexOptions.CultureInvariant | RegexOptions.ExplicitCapture)]
     private static partial Regex SemVerRegex();
