@@ -6,6 +6,8 @@ namespace Vela.Backend;
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(VelaAbiManifest))]
 [JsonSerializable(typeof(VelaPackageLockDocument))]
+[JsonSerializable(typeof(VelaPackageArchiveManifest))]
+[JsonSerializable(typeof(VelaRegistryCredentialsDocument))]
 internal sealed partial class VelaJsonSerializerContext : JsonSerializerContext
 {
 }

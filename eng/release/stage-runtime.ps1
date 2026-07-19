@@ -11,12 +11,16 @@ $runtimeSource = Join-Path $repositoryRoot 'src\Vela.Runtime'
 $uiRuntimeSource = Join-Path $repositoryRoot 'src\Vela.Ui.Runtime'
 $httpRuntimeSource = Join-Path $repositoryRoot 'src\Vela.Http.Runtime'
 $grpcRuntimeSource = Join-Path $repositoryRoot 'src\Vela.Grpc.Runtime'
+$sqliteRuntimeSource = Join-Path $repositoryRoot 'src\Vela.Sqlite.Runtime'
+$postgresRuntimeSource = Join-Path $repositoryRoot 'src\Vela.Postgres.Runtime'
 $globalJson = Join-Path $repositoryRoot 'global.json'
 $publishPath = [System.IO.Path]::GetFullPath($PublishDirectory)
 $runtimeDestination = Join-Path $publishPath 'runtime'
 $uiRuntimeDestination = Join-Path $publishPath 'ui-runtime'
 $httpRuntimeDestination = Join-Path $publishPath 'http-runtime'
 $grpcRuntimeDestination = Join-Path $publishPath 'grpc-runtime'
+$sqliteRuntimeDestination = Join-Path $publishPath 'sqlite-runtime'
+$postgresRuntimeDestination = Join-Path $publishPath 'postgres-runtime'
 
 function Copy-AdapterProject {
     param(
@@ -67,6 +71,10 @@ Get-ChildItem -LiteralPath $publishPath -File |
 Get-ChildItem -LiteralPath $runtimeSource -File |
     Where-Object { $_.Extension -eq '.cs' -or $_.Name -eq 'Vela.Runtime.csproj' } |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $runtimeDestination -Force }
+$interopSource = Join-Path $runtimeSource 'Interop'
+if (Test-Path -LiteralPath $interopSource -PathType Container) {
+    Copy-Item -LiteralPath $interopSource -Destination (Join-Path $runtimeDestination 'Interop') -Recurse -Force
+}
 Copy-Item -LiteralPath $globalJson -Destination (Join-Path $publishPath 'global.json') -Force
 
 $expectedProject = Join-Path $runtimeDestination 'Vela.Runtime.csproj'
@@ -77,5 +85,7 @@ if (-not (Test-Path -LiteralPath $expectedProject -PathType Leaf)) {
 Copy-AdapterProject -Source $uiRuntimeSource -Destination $uiRuntimeDestination -ProjectFileName 'Vela.Ui.Runtime.csproj'
 Copy-AdapterProject -Source $httpRuntimeSource -Destination $httpRuntimeDestination -ProjectFileName 'Vela.Http.Runtime.csproj'
 Copy-AdapterProject -Source $grpcRuntimeSource -Destination $grpcRuntimeDestination -ProjectFileName 'Vela.Grpc.Runtime.csproj' -ExtraDirectories @('Protos')
+Copy-AdapterProject -Source $sqliteRuntimeSource -Destination $sqliteRuntimeDestination -ProjectFileName 'Vela.Sqlite.Runtime.csproj'
+Copy-AdapterProject -Source $postgresRuntimeSource -Destination $postgresRuntimeDestination -ProjectFileName 'Vela.Postgres.Runtime.csproj'
 
 Write-Output $runtimeDestination

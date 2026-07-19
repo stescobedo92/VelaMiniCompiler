@@ -1,14 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>vela</AssemblyName>
+    <AssemblyName>vela-lsp</AssemblyName>
+    <RootNamespace>Vela.LanguageServer</RootNamespace>
   </PropertyGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\Vela.Core\Vela.Core.csproj" />
     <ProjectReference Include="..\Vela.Backend\Vela.Backend.csproj" />
-    <ProjectReference Include="..\Vela.Packages\Vela.Packages.csproj" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="Spectre.Console" Version="0.57.0" />
   </ItemGroup>
 </Project>

@@ -3,18 +3,27 @@
     <Project Path="src/Vela.Backend/Vela.Backend.csproj" />
     <Project Path="src/Vela.Cli/Vela.Cli.csproj" />
     <Project Path="src/Vela.Core/Vela.Core.csproj" />
+    <Project Path="src/Vela.Packages/Vela.Packages.csproj" />
+    <Project Path="src/Vela.Postgres.Runtime/Vela.Postgres.Runtime.csproj" />
+    <Project Path="src/Vela.Registry.Server/Vela.Registry.Server.csproj" />
     <Project Path="src/Vela.Runtime/Vela.Runtime.csproj" />
+    <Project Path="src/Vela.Sqlite.Runtime/Vela.Sqlite.Runtime.csproj" />
     <Project Path="src/Vela.Ui.Runtime/Vela.Ui.Runtime.csproj" />
     <Project Path="src/Vela.Http.Runtime/Vela.Http.Runtime.csproj" />
     <Project Path="src/Vela.Grpc.Runtime/Vela.Grpc.Runtime.csproj" />
+    <Project Path="src/Vela.LanguageServer/Vela.LanguageServer.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Vela.Backend.Tests/Vela.Backend.Tests.csproj" />
     <Project Path="tests/Vela.Core.Tests/Vela.Core.Tests.csproj" />
+    <Project Path="tests/Vela.Packages.Tests/Vela.Packages.Tests.csproj" />
+    <Project Path="tests/Vela.Postgres.Runtime.Tests/Vela.Postgres.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj" />
+    <Project Path="tests/Vela.Sqlite.Runtime.Tests/Vela.Sqlite.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Ui.Runtime.Tests/Vela.Ui.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Http.Runtime.Tests/Vela.Http.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Grpc.Runtime.Tests/Vela.Grpc.Runtime.Tests.csproj" />
+    <Project Path="tests/Vela.LanguageServer.Tests/Vela.LanguageServer.Tests.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Vela.Runtime.Benchmarks/Vela.Runtime.Benchmarks.csproj" />

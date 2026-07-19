@@ -25,10 +25,15 @@ internal static class VelaCommandLine
                 "run" => await RunProgramAsync(options, renderer),
                 "build" => await BuildAsync(options, renderer),
                 "targets" => ShowTargets(options, renderer),
+                "package" => await PackageAsync(options, renderer),
                 _ => Fail(renderer, $"Unknown command '{options.Command}'. Run 'vela --help' for usage.")
             };
         }
         catch (VelaPackageException exception)
+        {
+            return Fail(renderer, exception.Message);
+        }
+        catch (VelaRegistryException exception)
         {
             return Fail(renderer, exception.Message);
         }
@@ -98,11 +103,7 @@ internal static class VelaCommandLine
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "vela", Guid.NewGuid().ToString("N"));
         try
         {
-            var buildService = new VelaBuildService(
-                FindRuntimeProject(),
-                FindUiRuntimeProject(),
-                FindHttpRuntimeProject(),
-                FindGrpcRuntimeProject());
+            var buildService = CreateBuildService();
             var generatedProject = buildService.WriteSourceProject(
                 compilation,
                 new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
@@ -153,11 +154,7 @@ internal static class VelaCommandLine
         }
 
         renderer.Status("Checking", input);
-        var buildService = new VelaBuildService(
-            FindRuntimeProject(),
-            FindUiRuntimeProject(),
-            FindHttpRuntimeProject(),
-            FindGrpcRuntimeProject());
+        var buildService = CreateBuildService();
         var dependencyStagingDirectory = package is null
             ? null
             : Path.Combine(Path.GetTempPath(), "vela", "dependencies", Guid.NewGuid().ToString("N"));
@@ -228,6 +225,130 @@ internal static class VelaCommandLine
         {
             TryDeleteDirectory(dependencyStagingDirectory);
         }
+    }
+
+    private static async Task<int> PackageAsync(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        return options.SubCommand switch
+        {
+            "pack" => PackagePack(options, renderer),
+            "login" => PackageLogin(options, renderer),
+            "logout" => PackageLogout(options, renderer),
+            "push" => await PackagePushAsync(options, renderer),
+            "restore" => await PackageRestoreAsync(options, renderer),
+            null => Fail(renderer, "The package command requires a subcommand: pack, login, logout, push, or restore."),
+            _ => Fail(renderer, $"Unknown package subcommand '{options.SubCommand}'. Use pack, login, logout, push, or restore.")
+        };
+    }
+
+    private static int PackagePack(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        var packagePath = options.InputPath ?? Directory.GetCurrentDirectory();
+        renderer.Status("Packing", Path.GetFullPath(packagePath));
+        var archivePath = VelaPackageArchive.Pack(packagePath, options.VersionOverride, options.OutputDirectory);
+        var manifest = VelaPackageArchive.ReadManifest(archivePath);
+        renderer.Success("Finished", $"{manifest.Name} v{manifest.Version} ({manifest.Kind})");
+        renderer.Detail("Archive", archivePath);
+        renderer.Detail("Files", $"{manifest.Files.Count} file(s), {DescribeArtifactSize(archivePath)}");
+        return 0;
+    }
+
+    private static int PackageLogin(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        var source = options.Source ?? VelaRegistryClient.DefaultSource;
+        var apiKey = options.ApiKey ?? Environment.GetEnvironmentVariable("VELA_API_KEY");
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            if (Console.IsInputRedirected)
+            {
+                apiKey = Console.In.ReadLine();
+            }
+            else
+            {
+                apiKey = AnsiConsole.Prompt(new TextPrompt<string>("API key from your publisher profile:").Secret());
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return Fail(renderer, "An API key is required. Pass --api-key, set VELA_API_KEY, or enter it when prompted.");
+        }
+
+        var store = new VelaRegistryCredentialStore();
+        store.Save(source, apiKey.Trim());
+        renderer.Success("Finished", $"credential stored for {VelaRegistryCredentialStore.NormalizeSource(source)}");
+        renderer.Detail("Location", store.Location);
+        return 0;
+    }
+
+    private static int PackageLogout(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        var source = options.Source ?? VelaRegistryClient.DefaultSource;
+        var store = new VelaRegistryCredentialStore();
+        if (!store.Remove(source))
+        {
+            return Fail(renderer, $"No stored credential for {VelaRegistryCredentialStore.NormalizeSource(source)}.");
+        }
+
+        renderer.Success("Finished", $"credential removed for {VelaRegistryCredentialStore.NormalizeSource(source)}");
+        return 0;
+    }
+
+    private static async Task<int> PackageRestoreAsync(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        if (options.InputPath is null)
+        {
+            return Fail(renderer, "Usage: vela package restore <name> --version <range> [--source url]");
+        }
+
+        var version = options.VersionOverride ?? "*";
+        var source = options.Source ?? "file://" + Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "registry"));
+        renderer.Status("Restoring", $"{options.InputPath}@{version} from {source}");
+        using var client = new Vela.Packages.VelaRestoreClient();
+        try
+        {
+            var restored = await client.RestoreAsync(options.InputPath, version, source);
+            renderer.Success("Finished", $"{restored.Name} v{restored.Version}");
+            renderer.Detail("Path", restored.Path);
+            return 0;
+        }
+        catch (Vela.Packages.VelaRegistryRestoreException exception)
+        {
+            return Fail(renderer, exception.Message);
+        }
+    }
+
+    private static async Task<int> PackagePushAsync(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        if (options.InputPath is null)
+        {
+            return Fail(renderer, "The push subcommand requires a .vpkg archive: vela package push ./artifacts/MyLib.1.0.0.vpkg");
+        }
+
+        var archivePath = Path.GetFullPath(options.InputPath);
+        if (!string.Equals(Path.GetExtension(archivePath), VelaPackageArchive.Extension, StringComparison.OrdinalIgnoreCase))
+        {
+            return Fail(renderer, $"The push subcommand accepts a {VelaPackageArchive.Extension} archive created by 'vela package pack'.");
+        }
+
+        var manifest = VelaPackageArchive.ReadManifest(archivePath);
+        var source = options.Source ?? VelaRegistryClient.DefaultSource;
+        var apiKey = options.ApiKey
+            ?? Environment.GetEnvironmentVariable("VELA_API_KEY")
+            ?? new VelaRegistryCredentialStore().Find(source);
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return Fail(renderer, $"No API key for {VelaRegistryCredentialStore.NormalizeSource(source)}. Run 'vela package login' first or pass --api-key.");
+        }
+
+        renderer.Status("Resolving", $"publish endpoint from {VelaRegistryCredentialStore.NormalizeSource(source)}");
+        using var client = new VelaRegistryClient();
+        var endpoint = await client.ResolvePublishEndpointAsync(source);
+        renderer.Status("Publishing", $"{manifest.Name} v{manifest.Version} to {endpoint}");
+        var result = await client.PushAsync(archivePath, endpoint, apiKey.Trim());
+        renderer.Success("Finished", result.Message);
+        renderer.Detail("Archive", $"{Path.GetFileName(archivePath)} ({DescribeArtifactSize(archivePath)})");
+        return 0;
     }
 
     private static int ShowTargets(CommandOptions options, VelaConsoleRenderer renderer)
@@ -441,6 +562,15 @@ internal static class VelaCommandLine
         throw new FileNotFoundException("Unable to locate the Vela runtime support project. Reinstall Vela or run the development CLI from the repository.");
     }
 
+    private static VelaBuildService CreateBuildService() =>
+        new(
+            FindRuntimeProject(),
+            FindUiRuntimeProject(),
+            FindHttpRuntimeProject(),
+            FindGrpcRuntimeProject(),
+            FindSqliteRuntimeProject(),
+            FindPostgresRuntimeProject());
+
     private static string? FindUiRuntimeProject() =>
         FindAdapterRuntimeProject("ui-runtime", "Vela.Ui.Runtime");
 
@@ -449,6 +579,12 @@ internal static class VelaCommandLine
 
     private static string? FindGrpcRuntimeProject() =>
         FindAdapterRuntimeProject("grpc-runtime", "Vela.Grpc.Runtime");
+
+    private static string? FindSqliteRuntimeProject() =>
+        FindAdapterRuntimeProject("sqlite-runtime", "Vela.Sqlite.Runtime");
+
+    private static string? FindPostgresRuntimeProject() =>
+        FindAdapterRuntimeProject("postgres-runtime", "Vela.Postgres.Runtime");
 
     private static string? FindAdapterRuntimeProject(string installedFolder, string projectFolderName)
     {
@@ -486,6 +622,10 @@ internal static class VelaCommandLine
         renderer.Detail("run", "vela run [file.vela | package-directory] [-- program arguments]");
         renderer.Detail("build", "vela build [file.vela | package-directory] [--lib] [--output directory] [--target rid]");
         renderer.Detail("targets", "vela targets");
+        renderer.Detail("package", "vela package pack [package-directory] [--version semver] [--output directory]");
+        renderer.Detail(string.Empty, "vela package login [--source url] [--api-key key]");
+        renderer.Detail(string.Empty, "vela package push <archive.vpkg> [--source url] [--api-key key]");
+        renderer.Detail(string.Empty, "vela package logout [--source url]");
         renderer.Detail("output", "Detailed and colored by default; use -q or --quiet to reduce output.");
         renderer.Detail("color", "--color auto|always|never; use -vv to include raw .NET publishing output.");
     }
@@ -493,10 +633,14 @@ internal static class VelaCommandLine
 
 internal sealed record CommandOptions(
     string? Command,
+    string? SubCommand,
     string? InputPath,
     string? OutputDirectory,
     string? Target,
     ExecutableMode? Mode,
+    string? Source,
+    string? ApiKey,
+    string? VersionOverride,
     bool BuildLibrary,
     bool Quiet,
     int Verbosity,
@@ -506,10 +650,14 @@ internal sealed record CommandOptions(
     public static CommandOptions Parse(string[] arguments)
     {
         string? command = null;
+        string? subCommand = null;
         string? input = null;
         string? output = null;
         string? target = null;
         ExecutableMode? mode = null;
+        string? source = null;
+        string? apiKey = null;
+        string? versionOverride = null;
         var buildLibrary = false;
         var quiet = false;
         var verbosity = 0;
@@ -522,7 +670,7 @@ internal sealed record CommandOptions(
             var argument = arguments[index];
             if (argument is "--help" or "-h")
             {
-                return new CommandOptions("help", null, null, null, null, false, false, 0, color, []);
+                return new CommandOptions("help", null, null, null, null, null, null, null, null, false, false, 0, color, []);
             }
 
             if (argument == "--")
@@ -556,7 +704,7 @@ internal sealed record CommandOptions(
                 continue;
             }
 
-            if (argument is "--output" or "--target" or "--mode" or "--color")
+            if (argument is "--output" or "--target" or "--mode" or "--color" or "--source" or "--api-key" or "--version")
             {
                 if (index + 1 >= arguments.Length)
                 {
@@ -570,6 +718,9 @@ internal sealed record CommandOptions(
                     case "--target": target = value; break;
                     case "--mode": mode = ParseMode(value); break;
                     case "--color": color = ParseColorMode(value); break;
+                    case "--source": source = value; break;
+                    case "--api-key": apiKey = value; break;
+                    case "--version": versionOverride = value; break;
                 }
 
                 continue;
@@ -583,6 +734,10 @@ internal sealed record CommandOptions(
             if (command is null)
             {
                 command = argument;
+            }
+            else if (command == "package" && subCommand is null)
+            {
+                subCommand = argument;
             }
             else if (input is null)
             {
@@ -599,7 +754,12 @@ internal sealed record CommandOptions(
             throw new ArgumentException("Program arguments after '--' are supported only by 'vela run'.");
         }
 
-        return new CommandOptions(command, input, output, target, mode, buildLibrary, quiet, verbosity, color, programArguments);
+        if ((source ?? apiKey ?? versionOverride) is not null && command != "package")
+        {
+            throw new ArgumentException("Options --source, --api-key, and --version are supported only by 'vela package'.");
+        }
+
+        return new CommandOptions(command, subCommand, input, output, target, mode, source, apiKey, versionOverride, buildLibrary, quiet, verbosity, color, programArguments);
     }
 
     private static ExecutableMode ParseMode(string value) => value switch
