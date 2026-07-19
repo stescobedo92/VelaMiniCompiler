@@ -1,20 +1,24 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+
 namespace Vela.Backend.Capabilities;
 
 /// <summary>Loads and validates the allowlisted SDK capability catalog.</summary>
 public sealed class VelaCapabilityCatalog
 {
+    public const string ProductionSigningKeyId = "vela-ecdsa-p256-v1";
+
+    /// <summary>SubjectPublicKeyInfo (SPKI) for the production ECDSA P-256 catalog signing key.</summary>
+    private static readonly byte[] ProductionPublicKeySpki = Convert.FromBase64String(
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFhOsdpyxOZrT+AQU6qDT85zYLm6xdJy4e9ju1X4HCJ8fqGEVVraxbvVncrkogZmT2LQftrsicKKihD0wGFSjpg==");
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = false
     };
-
-    // Development SDK key; production releases pin a rotating ECDSA key in eng/capabilities.
-    private static readonly byte[] DevelopmentHmacKey = Encoding.UTF8.GetBytes("vela-sdk-capability-dev-key-v1");
 
     private readonly Dictionary<string, VelaCapability> _capabilities;
 
@@ -23,7 +27,25 @@ public sealed class VelaCapabilityCatalog
         _capabilities = capabilities.ToDictionary(static item => item.Id, StringComparer.Ordinal);
     }
 
-    /// <summary>Loads a catalog from disk and verifies its content hash + HMAC signature.</summary>
+    /// <summary>Loads the SDK-shipped catalog from <c>eng/capabilities</c> relative to the runtime project.</summary>
+    public static VelaCapabilityCatalog LoadDefault(string runtimeProjectPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runtimeProjectPath);
+        var directory = Path.GetDirectoryName(Path.GetFullPath(runtimeProjectPath))
+            ?? throw new VelaCapabilityException("Unable to resolve the runtime project directory.");
+        for (var current = new DirectoryInfo(directory); current is not null; current = current.Parent)
+        {
+            var candidate = Path.Combine(current.FullName, "eng", "capabilities", "vela-capabilities.json");
+            if (File.Exists(candidate))
+            {
+                return Load(candidate);
+            }
+        }
+
+        throw new VelaCapabilityException("SDK capability catalog 'eng/capabilities/vela-capabilities.json' was not found.");
+    }
+
+    /// <summary>Loads a catalog from disk and verifies its content hash + ECDSA P-256 signature.</summary>
     public static VelaCapabilityCatalog Load(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -49,15 +71,17 @@ public sealed class VelaCapabilityCatalog
             throw new VelaCapabilityException("Capability catalog SHA-256 does not match the declared digest.");
         }
 
-        if (!string.Equals(document.SigningKeyId, "vela-dev-hmac-v1", StringComparison.Ordinal))
+        if (!string.Equals(document.SigningKeyId, ProductionSigningKeyId, StringComparison.Ordinal))
         {
             throw new VelaCapabilityException($"Unknown capability signing key '{document.SigningKeyId}'.");
         }
 
-        var expectedSignature = Convert.ToHexString(HMACSHA256.HashData(DevelopmentHmacKey, Encoding.UTF8.GetBytes(hash))).ToLowerInvariant();
-        if (!string.Equals(expectedSignature, document.Signature, StringComparison.OrdinalIgnoreCase))
+        var signatureBytes = Convert.FromHexString(document.Signature);
+        using var ecdsa = ECDsa.Create();
+        ecdsa.ImportSubjectPublicKeyInfo(ProductionPublicKeySpki, out _);
+        if (!ecdsa.VerifyData(Encoding.UTF8.GetBytes(hash), signatureBytes, HashAlgorithmName.SHA256))
         {
-            throw new VelaCapabilityException("Capability catalog signature is invalid.");
+            throw new VelaCapabilityException("Capability catalog ECDSA signature is invalid.");
         }
 
         return new VelaCapabilityCatalog(document.Capabilities);
@@ -81,13 +105,32 @@ public sealed class VelaCapabilityCatalog
         return resolved;
     }
 
-    /// <summary>Computes the development HMAC signature for a catalog JSON body (capabilities only).</summary>
-    public static (string Sha256, string Signature) Sign(IReadOnlyList<VelaCapability> capabilities)
+    /// <summary>Maps compilation adapter flags onto catalog capability identifiers.</summary>
+    public static IReadOnlyList<string> CapabilitiesFor(VelaCompilation compilation)
     {
-        var canonical = Canonicalize(capabilities);
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
-        var signature = Convert.ToHexString(HMACSHA256.HashData(DevelopmentHmacKey, Encoding.UTF8.GetBytes(hash))).ToLowerInvariant();
-        return (hash, signature);
+        ArgumentNullException.ThrowIfNull(compilation);
+        var ids = new List<string>();
+        if (compilation.RequiresHttp || compilation.RequiresGrpc)
+        {
+            ids.Add("aspnet-server");
+        }
+
+        if (compilation.RequiresGui)
+        {
+            ids.Add("avalonia-ui");
+        }
+
+        if (compilation.RequiresSqlite)
+        {
+            ids.Add("sqlite");
+        }
+
+        if (compilation.RequiresPostgres)
+        {
+            ids.Add("postgres");
+        }
+
+        return ids;
     }
 
     private static void ValidateCapabilities(IReadOnlyList<VelaCapability> capabilities)
@@ -130,7 +173,7 @@ public sealed class VelaCapabilityCatalog
         }
     }
 
-    private static string Canonicalize(IReadOnlyList<VelaCapability> capabilities)
+    internal static string Canonicalize(IReadOnlyList<VelaCapability> capabilities)
     {
         var ordered = capabilities
             .OrderBy(static item => item.Id, StringComparer.Ordinal)

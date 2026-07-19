@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Security;
+using Vela.Backend.Abi;
+using Vela.Backend.Capabilities;
 
 namespace Vela.Backend;
 
@@ -13,6 +15,7 @@ public sealed class VelaBuildService
     private readonly string? _sqliteRuntimeProjectPath;
     private readonly string? _postgresRuntimeProjectPath;
     private readonly string? _globalJsonPath;
+    private VelaCapabilityCatalog? _capabilityCatalog;
 
     public VelaBuildService(
         string runtimeProjectPath,
@@ -149,14 +152,19 @@ public sealed class VelaBuildService
             return new VelaLibraryBuildResult(build, null);
         }
 
+        var artifactDirectory = Path.GetDirectoryName(build.LibraryPath)!;
+        var sanitizedName = SanitizeApplicationName(options.ApplicationName);
         var manifest = VelaAbiManifest.Create(
             options.ApplicationName,
             packageVersion,
             build.RuntimeIdentifier,
             Path.GetFileName(build.LibraryPath),
             compilation.Exports);
-        var manifestPath = Path.Combine(Path.GetDirectoryName(build.LibraryPath)!, $"{SanitizeApplicationName(options.ApplicationName)}.velaabi.json");
+        var manifestPath = Path.Combine(artifactDirectory, $"{sanitizedName}.velaabi.json");
         manifest.Write(manifestPath);
+        File.WriteAllText(
+            Path.Combine(artifactDirectory, $"{sanitizedName}.h"),
+            VelaAbiHeaderWriter.Write(manifest));
         return new VelaLibraryBuildResult(build, manifest);
     }
 
@@ -347,12 +355,42 @@ public sealed class VelaBuildService
         var projectReferences = string.Join(
             Environment.NewLine,
             references.Select(path => $"                       <ProjectReference Include=\"{path}\" />"));
-        // FrameworkReference must live in ItemGroup, not PropertyGroup.
-        var frameworkRefs = compilation.RequiresHttp || compilation.RequiresGrpc
-            ? """
-                                 <FrameworkReference Include="Microsoft.AspNetCore.App" />
-               """
+
+        // Framework/package allowlist comes from the ECDSA-signed SDK catalog (cached).
+        // Adapter ProjectReferences remain the size-optimal path; catalog packages are emitted
+        // only when an adapter project is unavailable so restore still works.
+        var capabilities = CapabilityCatalog.Resolve(VelaCapabilityCatalog.CapabilitiesFor(compilation));
+        var frameworkRefs = string.Join(
+            Environment.NewLine,
+            capabilities
+                .SelectMany(static capability => capability.FrameworkReferences)
+                .Distinct(StringComparer.Ordinal)
+                .Select(static framework =>
+                {
+                    var escaped = SecurityElement.Escape(framework)
+                        ?? throw new InvalidOperationException("Unable to escape a FrameworkReference.");
+                    return $"                       <FrameworkReference Include=\"{escaped}\" />";
+                }));
+
+        var emitCatalogPackages = (compilation.RequiresSqlite && _sqliteRuntimeProjectPath is null)
+            || (compilation.RequiresPostgres && _postgresRuntimeProjectPath is null);
+        var packageRefs = emitCatalogPackages
+            ? string.Join(
+                Environment.NewLine,
+                capabilities
+                    .SelectMany(static capability => capability.PackageReferences)
+                    .GroupBy(static package => package.Id, StringComparer.Ordinal)
+                    .Select(static group => group.First())
+                    .Select(static package =>
+                    {
+                        var id = SecurityElement.Escape(package.Id)
+                            ?? throw new InvalidOperationException("Unable to escape a PackageReference id.");
+                        var version = SecurityElement.Escape(package.Version)
+                            ?? throw new InvalidOperationException("Unable to escape a PackageReference version.");
+                        return $"                       <PackageReference Include=\"{id}\" Version=\"{version}\" />";
+                    }))
             : string.Empty;
+
         var propertyExtras = string.Join(
             Environment.NewLine,
             extraProperties.Select(static p => "                       " + p));
@@ -373,10 +411,14 @@ public sealed class VelaBuildService
                  <ItemGroup>
                {projectReferences}
                {frameworkRefs}
+               {packageRefs}
                  </ItemGroup>
                </Project>
                """;
     }
+
+    private VelaCapabilityCatalog CapabilityCatalog =>
+        _capabilityCatalog ??= VelaCapabilityCatalog.LoadDefault(_runtimeProjectPath);
 
     private static List<string> CreatePublishArguments(GeneratedProject layout, string runtimeIdentifier, ExecutableMode mode, VelaArtifactKind artifactKind)
     {

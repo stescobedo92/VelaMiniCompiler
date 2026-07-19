@@ -35,26 +35,33 @@ public sealed record VelaAbiManifest(
     string ContractHash)
 {
     /// <summary>Creates a canonical ABI manifest with a content-derived contract hash.</summary>
+    /// <param name="abiVersion">Use 2 for status/out-buffer Text/Decimal exports; 1 for legacy direct returns.</param>
     public static VelaAbiManifest Create(
         string package,
         string version,
         string runtimeIdentifier,
         string libraryFileName,
-        IReadOnlyList<VelaFfiExport> exports)
+        IReadOnlyList<VelaFfiExport> exports,
+        int abiVersion = 2)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(package);
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeIdentifier);
         ArgumentException.ThrowIfNullOrWhiteSpace(libraryFileName);
         ArgumentNullException.ThrowIfNull(exports);
+        if (abiVersion is not (1 or 2))
+        {
+            throw new ArgumentOutOfRangeException(nameof(abiVersion), "ABI version must be 1 or 2.");
+        }
 
+        var versionText = abiVersion.ToString(System.Globalization.CultureInfo.InvariantCulture);
         var canonicalExports = exports
             .OrderBy(static exportItem => exportItem.Name, StringComparer.Ordinal)
             .ThenBy(static exportItem => exportItem.Symbol, StringComparer.Ordinal)
             .Select(static exportItem => $"{exportItem.Name}|{exportItem.Symbol}|{string.Join(",", exportItem.Parameters)}|{exportItem.ReturnType}");
-        var canonical = string.Join("\n", new[] { "vela-native-abi", "1", package, version, runtimeIdentifier, libraryFileName }.Concat(canonicalExports));
+        var canonical = string.Join("\n", new[] { "vela-native-abi", versionText, package, version, runtimeIdentifier, libraryFileName }.Concat(canonicalExports));
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
-        return new VelaAbiManifest(1, package, version, runtimeIdentifier, libraryFileName, exports, hash);
+        return new VelaAbiManifest(abiVersion, package, version, runtimeIdentifier, libraryFileName, exports, hash);
     }
 
     /// <summary>Writes the manifest as indented UTF-8 JSON.</summary>

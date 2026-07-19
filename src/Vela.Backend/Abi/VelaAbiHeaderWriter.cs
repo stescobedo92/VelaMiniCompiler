@@ -16,41 +16,41 @@ public static class VelaAbiHeaderWriter
         builder.AppendLine(CultureInfo.InvariantCulture, $"#ifndef {guard}");
         builder.AppendLine(CultureInfo.InvariantCulture, $"#define {guard}");
         builder.AppendLine();
+        builder.AppendLine("#ifdef __cplusplus");
+        builder.AppendLine("extern \"C\" {");
+        builder.AppendLine("#endif");
+        builder.AppendLine();
         builder.AppendLine("#include <stdint.h>");
         builder.AppendLine("#include <stddef.h>");
         builder.AppendLine();
         builder.AppendLine("typedef struct vela_text { const char* data; size_t length; } vela_text;");
+        builder.AppendLine("typedef struct vela_buffer { void* data; size_t length; size_t capacity; uint64_t allocator_id; } vela_buffer;");
         builder.AppendLine("typedef struct vela_decimal { int32_t lo; int32_t mid; int32_t hi; int32_t flags; } vela_decimal;");
         builder.AppendLine("typedef int32_t vela_status;");
         builder.AppendLine();
-        builder.AppendLine(CultureInfo.InvariantCulture, $"/* package: {manifest.Package} v{manifest.Version} abi={manifest.AbiVersion} */");
+        builder.AppendLine(CultureInfo.InvariantCulture, $"/* package: {manifest.Package} v{manifest.Version} abi={manifest.AbiVersion} contract={manifest.ContractHash} */");
         foreach (var exportItem in manifest.Exports.OrderBy(static item => item.Symbol, StringComparer.Ordinal))
         {
-            var returnType = ToCType(exportItem.ReturnType);
-            var parameters = exportItem.Parameters.Count == 0
-                ? "void"
-                : string.Join(", ", exportItem.Parameters.Select((type, index) => $"{ToCType(type)} arg{index.ToString(CultureInfo.InvariantCulture)}"));
-            builder.AppendLine(CultureInfo.InvariantCulture, $"{returnType} {exportItem.Symbol}({parameters});");
+            builder.AppendLine(VelaAbiEmitter.FormatCPrototype(
+                exportItem.Symbol,
+                exportItem.Parameters,
+                exportItem.ReturnType,
+                manifest.AbiVersion));
+        }
+
+        if (manifest.AbiVersion >= 2)
+        {
+            builder.AppendLine("void vela_buffer_release(vela_buffer value);");
         }
 
         builder.AppendLine();
+        builder.AppendLine("#ifdef __cplusplus");
+        builder.AppendLine("}");
+        builder.AppendLine("#endif");
+        builder.AppendLine();
         builder.AppendLine(CultureInfo.InvariantCulture, $"#endif /* {guard} */");
-        return builder.ToString();
+        return builder.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
     }
-
-    private static string ToCType(string velaType) => velaType switch
-    {
-        "Bool" => "uint8_t",
-        "Int" => "int32_t",
-        "UInt" => "uint32_t",
-        "Long" => "int64_t",
-        "Float" => "float",
-        "Double" => "double",
-        "Decimal" => "vela_decimal",
-        "Text" => "vela_text",
-        "Unit" => "void",
-        _ => "void*"
-    };
 
     private static string Sanitize(string value) =>
         new(value.Select(static character => char.IsLetterOrDigit(character) ? character : '_').ToArray());

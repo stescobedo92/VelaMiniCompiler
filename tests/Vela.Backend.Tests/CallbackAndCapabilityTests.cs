@@ -68,8 +68,35 @@ public sealed class CallbackAndCapabilityTests
 
         Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static item => item.Message)));
         Assert.Contains("VelaText.FromString", compilation.GeneratedSource, StringComparison.Ordinal);
-        Assert.Contains("VelaDecimal.FromDecimal", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("out VelaAbiBuffer", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("VelaAbiStatus.Success", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("ToUtf8String()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("ToManagedString()", compilation.GeneratedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CompileConsumerSupportsLegacyAbiV1TextImport()
+    {
+        var manifest = VelaAbiManifest.Create(
+            "vela.echo",
+            "0.1.0",
+            "win-x64",
+            "vela_echo.dll",
+            [new VelaFfiExport("echo", "vela_vela_echo_echo", ["Text"], "Text")],
+            abiVersion: 1);
+        var compilation = VelaCompiler.Compile(
+            new SourceText("""
+                include vela.echo as echo;
+                fn main() -> Int {
+                    print(echo.echo("hi"));
+                    return 0;
+                }
+                """, "app.vela"),
+            [new VelaLibraryImport("vela.echo", "vela_echo.dll", manifest)]);
+
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static item => item.Message)));
         Assert.Contains("ToManagedString()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("out VelaAbiBuffer", compilation.GeneratedSource, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -83,7 +110,27 @@ public sealed class CallbackAndCapabilityTests
             [new VelaFfiExport("echo", "vela_acme_echo_echo", ["Text"], "Text")]);
         var header = VelaAbiHeaderWriter.Write(manifest);
         Assert.Contains("typedef struct vela_text", header, StringComparison.Ordinal);
-        Assert.Contains("vela_acme_echo_echo", header, StringComparison.Ordinal);
+        Assert.Contains("typedef struct vela_buffer", header, StringComparison.Ordinal);
+        Assert.Contains("vela_status vela_acme_echo_echo", header, StringComparison.Ordinal);
+        Assert.Contains("vela_buffer_release", header, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LibraryExportUsesAbiV2StatusOutProtocol()
+    {
+        var library = VelaCompiler.CompileLibrary(
+            new SourceText("""
+                public ffi fn echo(value: Text) -> Text {
+                    return value;
+                }
+                """, "echo.vela"),
+            "acme.echo");
+
+        Assert.False(library.Compilation.HasErrors, string.Join(Environment.NewLine, library.Compilation.Diagnostics.Select(static item => item.Message)));
+        Assert.Contains("out VelaAbiBuffer result", library.Compilation.GeneratedSource!, StringComparison.Ordinal);
+        Assert.Contains("VelaAbiBuffer.FromUtf8", library.Compilation.GeneratedSource!, StringComparison.Ordinal);
+        Assert.Contains("vela_buffer_release", library.Compilation.GeneratedSource!, StringComparison.Ordinal);
+        Assert.Contains("(int)VelaAbiStatus.Success", library.Compilation.GeneratedSource!, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -4,33 +4,69 @@
     {
       "Id": "aspnet-server",
       "ProjectSdk": null,
-      "FrameworkReferences": [ "Microsoft.AspNetCore.App" ],
+      "FrameworkReferences": [
+        "Microsoft.AspNetCore.App"
+      ],
       "PackageReferences": [],
-      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+      "SupportedTargets": [
+        "host-native",
+        "linux-x64",
+        "osx-arm64",
+        "osx-x64",
+        "win-x64"
+      ]
     },
     {
       "Id": "avalonia-ui",
       "ProjectSdk": null,
       "FrameworkReferences": [],
       "PackageReferences": [],
-      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+      "SupportedTargets": [
+        "host-native",
+        "linux-x64",
+        "osx-arm64",
+        "osx-x64",
+        "win-x64"
+      ]
     },
     {
       "Id": "postgres",
       "ProjectSdk": null,
       "FrameworkReferences": [],
-      "PackageReferences": [ { "Id": "Npgsql", "Version": "10.0.0" } ],
-      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+      "PackageReferences": [
+        {
+          "Id": "Npgsql",
+          "Version": "10.0.0"
+        }
+      ],
+      "SupportedTargets": [
+        "host-native",
+        "linux-x64",
+        "osx-arm64",
+        "osx-x64",
+        "win-x64"
+      ]
     },
     {
       "Id": "sqlite",
       "ProjectSdk": null,
       "FrameworkReferences": [],
-      "PackageReferences": [ { "Id": "Microsoft.Data.Sqlite", "Version": "10.0.10" } ],
-      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+      "PackageReferences": [
+        {
+          "Id": "Microsoft.Data.Sqlite",
+          "Version": "10.0.10"
+        }
+      ],
+      "SupportedTargets": [
+        "host-native",
+        "linux-x64",
+        "osx-arm64",
+        "osx-x64",
+        "win-x64"
+      ]
     }
   ],
   "Sha256": "dc228e91cba5f5760dc533a1c3ee5ecfca9d7413ec3831131a283879d3c95466",
-  "SigningKeyId": "vela-dev-hmac-v1",
-  "Signature": "6f10972cdf299ad6c7c25a1dc8ad5fbd59e76d8ce6398daa7950325b1194e518"
+  "SigningKeyId": "vela-ecdsa-p256-v1",
+  "Signature": "9738f1b1fd2f5a54b838d1baea61e607db50d4f05095027d5756e8f05b7e65d725135b32e4c5bb3c317b9138967365aa284e476b2ff1114c165caded9c5f6cb7"
 }
