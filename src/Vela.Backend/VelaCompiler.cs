@@ -56,7 +56,9 @@ public static class VelaCompiler
             sourceBundle,
             emitter.RequiresGui,
             emitter.RequiresHttp,
-            emitter.RequiresGrpc);
+            emitter.RequiresGrpc,
+            emitter.RequiresSqlite,
+            emitter.RequiresPostgres);
     }
 
     /// <summary>Compiles one Vela library source document and records its native FFI exports.</summary>

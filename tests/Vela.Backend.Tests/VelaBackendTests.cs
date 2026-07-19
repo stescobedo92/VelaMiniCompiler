@@ -166,6 +166,65 @@ public sealed class VelaBackendTests
         Assert.Contains("foreach (var value in values)", compilation.GeneratedSource, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void CompileOrderedCollectionsEmitsRuntimeTypesAndOperations()
+    {
+        var compilation = Compile("""
+            fn main() -> Int {
+                var scores = SortedMap<Text, Int>();
+                scores.set("ada", 97);
+                scores["zoe"] = 84;
+                print(scores.try_get("ada").value);
+                print(scores.first_key().value);
+
+                var levels = SortedSet<Int>();
+                print(levels.add(10));
+                for level in levels {
+                    print(level);
+                }
+
+                var window = Deque<Text>();
+                window.push_front("a");
+                window.push_back("b");
+                print(window.pop_back().value);
+
+                var tasks = PriorityQueue<Int>(4);
+                tasks.push(3);
+                print(tasks.pop().value);
+
+                var history = LinkedList<Text>();
+                history.push_back("open");
+                print(history.remove("open"));
+                return scores.count;
+            }
+            """, "ordered-collections.vela");
+
+        Assert.False(compilation.HasErrors);
+        Assert.Contains("new VelaSortedMap<string, int>()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("new VelaSortedSet<int>()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("new VelaDeque<string>()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("new VelaPriorityQueue<int>(4)", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("new VelaLinkedList<string>()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("scores.TryGet(\"ada\")", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("scores.FirstKey()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("window.PopBack()", compilation.GeneratedSource, StringComparison.Ordinal);
+        Assert.Contains("foreach (var level in levels)", compilation.GeneratedSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("SortedMap<Vector<Int>, Int>()", "does not have a defined ordering")]
+    [InlineData("SortedSet<Vector<Int>>()", "does not have a defined ordering")]
+    [InlineData("PriorityQueue<Vector<Int>>()", "does not have a defined ordering")]
+    [InlineData("SortedMap<Text, Int>(4)", "does not accept constructor arguments")]
+    [InlineData("LinkedList<Int>(4)", "does not accept constructor arguments")]
+    public void CompileInvalidOrderedCollectionConstructionReportsDiagnostic(string construction, string expectedMessage)
+    {
+        var compilation = Compile($"fn main() -> Int {{ var values = {construction}; return 0; }}", "invalid-ordered-collection.vela");
+
+        Assert.True(compilation.HasErrors);
+        Assert.Contains(compilation.Diagnostics, item => item.Code == "VEL3006" && item.Message.Contains(expectedMessage, StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("HashMap<Vector<Int>, Int>()", "cannot be used as a hash key")]
     [InlineData("Vector<Int>(-1)", "capacity cannot be negative")]

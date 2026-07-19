@@ -1,0 +1,36 @@
+{
+  "SchemaVersion": 1,
+  "Capabilities": [
+    {
+      "Id": "aspnet-server",
+      "ProjectSdk": null,
+      "FrameworkReferences": [ "Microsoft.AspNetCore.App" ],
+      "PackageReferences": [],
+      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+    },
+    {
+      "Id": "avalonia-ui",
+      "ProjectSdk": null,
+      "FrameworkReferences": [],
+      "PackageReferences": [],
+      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+    },
+    {
+      "Id": "postgres",
+      "ProjectSdk": null,
+      "FrameworkReferences": [],
+      "PackageReferences": [ { "Id": "Npgsql", "Version": "10.0.0" } ],
+      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+    },
+    {
+      "Id": "sqlite",
+      "ProjectSdk": null,
+      "FrameworkReferences": [],
+      "PackageReferences": [ { "Id": "Microsoft.Data.Sqlite", "Version": "10.0.10" } ],
+      "SupportedTargets": [ "host-native", "linux-x64", "osx-arm64", "osx-x64", "win-x64" ]
+    }
+  ],
+  "Sha256": "dc228e91cba5f5760dc533a1c3ee5ecfca9d7413ec3831131a283879d3c95466",
+  "SigningKeyId": "vela-dev-hmac-v1",
+  "Signature": "6f10972cdf299ad6c7c25a1dc8ad5fbd59e76d8ce6398daa7950325b1194e518"
+}

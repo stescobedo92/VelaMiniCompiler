@@ -1,0 +1,10 @@
+include vela.core;
+
+fn main() -> Int {
+    let prefix = "Hello ";
+    let format: Fn<(Text), Text> = fn(name: Text) -> Text {
+        return prefix + name;
+    };
+    print(format("Vela"));
+    return 0;
+}

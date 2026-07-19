@@ -10,13 +10,17 @@ public sealed class VelaBuildService
     private readonly string? _uiRuntimeProjectPath;
     private readonly string? _httpRuntimeProjectPath;
     private readonly string? _grpcRuntimeProjectPath;
+    private readonly string? _sqliteRuntimeProjectPath;
+    private readonly string? _postgresRuntimeProjectPath;
     private readonly string? _globalJsonPath;
 
     public VelaBuildService(
         string runtimeProjectPath,
         string? uiRuntimeProjectPath = null,
         string? httpRuntimeProjectPath = null,
-        string? grpcRuntimeProjectPath = null)
+        string? grpcRuntimeProjectPath = null,
+        string? sqliteRuntimeProjectPath = null,
+        string? postgresRuntimeProjectPath = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runtimeProjectPath);
         _runtimeProjectPath = Path.GetFullPath(runtimeProjectPath);
@@ -49,6 +53,24 @@ public sealed class VelaBuildService
             if (!File.Exists(_grpcRuntimeProjectPath))
             {
                 throw new FileNotFoundException("The Vela gRPC runtime project was not found.", _grpcRuntimeProjectPath);
+            }
+        }
+
+        if (sqliteRuntimeProjectPath is not null)
+        {
+            _sqliteRuntimeProjectPath = Path.GetFullPath(sqliteRuntimeProjectPath);
+            if (!File.Exists(_sqliteRuntimeProjectPath))
+            {
+                throw new FileNotFoundException("The Vela SQLite runtime project was not found.", _sqliteRuntimeProjectPath);
+            }
+        }
+
+        if (postgresRuntimeProjectPath is not null)
+        {
+            _postgresRuntimeProjectPath = Path.GetFullPath(postgresRuntimeProjectPath);
+            if (!File.Exists(_postgresRuntimeProjectPath))
+            {
+                throw new FileNotFoundException("The Vela PostgreSQL runtime project was not found.", _postgresRuntimeProjectPath);
             }
         }
 
@@ -297,6 +319,28 @@ public sealed class VelaBuildService
 
             references.Add(SecurityElement.Escape(_grpcRuntimeProjectPath)
                 ?? throw new InvalidOperationException("Unable to escape the gRPC runtime project path."));
+        }
+
+        if (compilation.RequiresSqlite)
+        {
+            if (_sqliteRuntimeProjectPath is null)
+            {
+                throw new InvalidOperationException("This program imports vela.core.sqlite, but the Vela SQLite runtime project was not located.");
+            }
+
+            references.Add(SecurityElement.Escape(_sqliteRuntimeProjectPath)
+                ?? throw new InvalidOperationException("Unable to escape the SQLite runtime project path."));
+        }
+
+        if (compilation.RequiresPostgres)
+        {
+            if (_postgresRuntimeProjectPath is null)
+            {
+                throw new InvalidOperationException("This program imports vela.core.postgres, but the Vela PostgreSQL runtime project was not located.");
+            }
+
+            references.Add(SecurityElement.Escape(_postgresRuntimeProjectPath)
+                ?? throw new InvalidOperationException("Unable to escape the PostgreSQL runtime project path."));
         }
 
         var aotCompatible = compilation.RequiresFrameworkDependentPublish ? "false" : "true";

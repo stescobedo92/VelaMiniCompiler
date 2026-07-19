@@ -13,12 +13,14 @@ public sealed record VelaCompilation(
     VelaSourceBundle? SourceBundle = null,
     bool RequiresGui = false,
     bool RequiresHttp = false,
-    bool RequiresGrpc = false)
+    bool RequiresGrpc = false,
+    bool RequiresSqlite = false,
+    bool RequiresPostgres = false)
 {
     public bool HasErrors => Diagnostics.Any(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
 
     /// <summary>Gets whether publish should avoid Native AOT for adapter-heavy hosts.</summary>
-    public bool RequiresFrameworkDependentPublish => RequiresGui || RequiresHttp || RequiresGrpc;
+    public bool RequiresFrameworkDependentPublish => RequiresGui || RequiresHttp || RequiresGrpc || RequiresSqlite || RequiresPostgres;
 
     /// <summary>Gets a diagnostic with the physical source document that owns its location.</summary>
     public VelaMappedDiagnostic MapDiagnostic(Diagnostic diagnostic)

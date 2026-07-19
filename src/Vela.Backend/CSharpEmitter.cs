@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Vela.Backend.Emission;
 using Vela.Core.Diagnostics;
 using Vela.Core.Lexing;
 using Vela.Core.Source;
@@ -8,7 +9,7 @@ using Vela.Core.Syntax;
 namespace Vela.Backend;
 
 /// <summary>Performs Vela semantic checks while emitting deterministic, Native AOT-safe C#.</summary>
-internal sealed class CSharpEmitter
+internal sealed partial class CSharpEmitter
 {
     private static readonly string[] EmptyGenericNames = [];
     private static readonly string[] OptionMatchVariants = ["Some", "None"];
@@ -34,7 +35,8 @@ internal sealed class CSharpEmitter
         "vela.core.json", "vela.core.crypto", "vela.core.tcp", "vela.core.text", "vela.core.math",
         "vela.core.time", "vela.core.random", "vela.core.io", "vela.core.encoding", "vela.core.env",
         "vela.core.system", "vela.core.console", "vela.core.gui", "vela.core.http",
-        "vela.core.graphql", "vela.core.grpc", "vela.concurrent"
+        "vela.core.graphql", "vela.core.grpc", "vela.core.sqlite", "vela.core.postgres",
+        "vela.concurrent"
     };
     private static readonly Dictionary<string, int> RuntimeExceptionRanks = new(StringComparer.Ordinal)
     {
@@ -87,6 +89,12 @@ internal sealed class CSharpEmitter
 
     /// <summary>Gets whether the compiled program imports the gRPC module.</summary>
     public bool RequiresGrpc { get; private set; }
+
+    /// <summary>Gets whether the compiled program imports the SQLite module.</summary>
+    public bool RequiresSqlite { get; private set; }
+
+    /// <summary>Gets whether the compiled program imports the PostgreSQL module.</summary>
+    public bool RequiresPostgres { get; private set; }
 
     public CSharpEmitter(
         SourceText source,
@@ -141,6 +149,16 @@ internal sealed class CSharpEmitter
         if (RequiresGrpc)
         {
             _writer.WriteLine("using Vela.Grpc;");
+        }
+
+        if (RequiresSqlite)
+        {
+            _writer.WriteLine("using Vela.Sqlite;");
+        }
+
+        if (RequiresPostgres)
+        {
+            _writer.WriteLine("using Vela.Postgres;");
         }
 
         _writer.WriteLine();
@@ -354,6 +372,16 @@ internal sealed class CSharpEmitter
                     RequiresGrpc = true;
                 }
 
+                if (string.Equals(include.PackageName, "vela.core.sqlite", StringComparison.Ordinal))
+                {
+                    RequiresSqlite = true;
+                }
+
+                if (string.Equals(include.PackageName, "vela.core.postgres", StringComparison.Ordinal))
+                {
+                    RequiresPostgres = true;
+                }
+
                 var coreAlias = include.Alias?.Text ?? include.PackageSegments[^1].Text;
                 if (_coreModuleAliases.TryGetValue(coreAlias, out var existingCoreModule))
                 {
@@ -404,10 +432,90 @@ internal sealed class CSharpEmitter
                 }
 
                 var methodName = ImportedMethodName(pair.Key, exportItem.Name);
-                var parameters = string.Join(", ", parameterTypes.Select((type, index) => $"{CSharpType(type)} value{index.ToString(CultureInfo.InvariantCulture)}"));
-                _writer.WriteLine($"[LibraryImport(\"{EscapeStringForAttribute(pair.Value.LibraryName)}\", EntryPoint = \"{EscapeStringForAttribute(exportItem.Symbol)}\")]" );
+                var needsWireWrapper = RequiresWireWrapper(returnType) || parameterTypes.Any(RequiresWireWrapper);
+                if (!needsWireWrapper)
+                {
+                    var parameters = string.Join(", ", parameterTypes.Select((type, index) => $"{CSharpType(type)} value{index.ToString(CultureInfo.InvariantCulture)}"));
+                    _writer.WriteLine($"[LibraryImport(\"{EscapeStringForAttribute(pair.Value.LibraryName)}\", EntryPoint = \"{EscapeStringForAttribute(exportItem.Symbol)}\")]");
+                    _writer.WriteLine("[UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]");
+                    _writer.WriteLine($"internal static partial {CSharpType(returnType)} {methodName}({parameters});");
+                    _writer.WriteLine();
+                    continue;
+                }
+
+                var rawName = methodName + "_Raw";
+                var rawParameters = string.Join(", ", parameterTypes.Select((type, index) => $"{FfiCSharpType(type)} value{index.ToString(CultureInfo.InvariantCulture)}"));
+                _writer.WriteLine($"[LibraryImport(\"{EscapeStringForAttribute(pair.Value.LibraryName)}\", EntryPoint = \"{EscapeStringForAttribute(exportItem.Symbol)}\")]");
                 _writer.WriteLine("[UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]");
-                _writer.WriteLine($"internal static partial {CSharpType(returnType)} {methodName}({parameters});");
+                _writer.WriteLine($"private static partial {FfiCSharpType(returnType)} {rawName}({rawParameters});");
+                _writer.WriteLine();
+
+                var managedParameters = string.Join(", ", parameterTypes.Select((type, index) => $"{CSharpType(type)} value{index.ToString(CultureInfo.InvariantCulture)}"));
+                _writer.WriteLine($"internal static {CSharpType(returnType)} {methodName}({managedParameters})");
+                _writer.WriteLine("{");
+                _writer.Indent();
+                for (var index = 0; index < parameterTypes.Length; index++)
+                {
+                    if (parameterTypes[index].IsSameAs(VelaType.Text))
+                    {
+                        _writer.WriteLine($"var __wire{index.ToString(CultureInfo.InvariantCulture)} = VelaText.FromString(value{index.ToString(CultureInfo.InvariantCulture)});");
+                    }
+                    else if (parameterTypes[index].IsSameAs(VelaType.Decimal))
+                    {
+                        _writer.WriteLine($"var __wire{index.ToString(CultureInfo.InvariantCulture)} = VelaDecimal.FromDecimal(value{index.ToString(CultureInfo.InvariantCulture)});");
+                    }
+                }
+
+                var textParams = Enumerable.Range(0, parameterTypes.Length).Where(index => parameterTypes[index].IsSameAs(VelaType.Text)).ToArray();
+                if (textParams.Length > 0)
+                {
+                    _writer.WriteLine("try");
+                    _writer.WriteLine("{");
+                    _writer.Indent();
+                }
+
+                var callArgs = string.Join(", ", parameterTypes.Select((type, index) =>
+                    type.IsSameAs(VelaType.Text) || type.IsSameAs(VelaType.Decimal)
+                        ? $"__wire{index.ToString(CultureInfo.InvariantCulture)}"
+                        : $"value{index.ToString(CultureInfo.InvariantCulture)}"));
+
+                if (returnType.IsSameAs(VelaType.Unit))
+                {
+                    _writer.WriteLine($"{rawName}({callArgs});");
+                }
+                else if (returnType.IsSameAs(VelaType.Text))
+                {
+                    _writer.WriteLine($"var __result = {rawName}({callArgs});");
+                    _writer.WriteLine("try { return __result.ToManagedString(); }");
+                    _writer.WriteLine("finally { VelaText.Free(__result); }");
+                }
+                else if (returnType.IsSameAs(VelaType.Decimal))
+                {
+                    _writer.WriteLine($"return {rawName}({callArgs}).ToDecimal();");
+                }
+                else
+                {
+                    _writer.WriteLine($"return {FfiIncomingCode(returnType, $"{rawName}({callArgs})")};");
+                }
+
+                if (textParams.Length > 0)
+                {
+                    _writer.Unindent();
+                    _writer.WriteLine("}");
+                    _writer.WriteLine("finally");
+                    _writer.WriteLine("{");
+                    _writer.Indent();
+                    foreach (var index in textParams)
+                    {
+                        _writer.WriteLine($"VelaText.Free(__wire{index.ToString(CultureInfo.InvariantCulture)});");
+                    }
+
+                    _writer.Unindent();
+                    _writer.WriteLine("}");
+                }
+
+                _writer.Unindent();
+                _writer.WriteLine("}");
                 _writer.WriteLine();
             }
         }
@@ -415,6 +523,8 @@ internal sealed class CSharpEmitter
         _writer.Unindent();
         _writer.WriteLine("}");
     }
+
+    private static bool RequiresWireWrapper(VelaType type) => type.IsSameAs(VelaType.Text) || type.IsSameAs(VelaType.Decimal);
 
     private void AddDeclaration<TSymbol>(Dictionary<string, TSymbol> symbols, string name, TSymbol symbol, TextSpan span, string kind)
     {
@@ -1632,43 +1742,24 @@ internal sealed class CSharpEmitter
 
         var returnType = ResolveType(lambda.ReturnType, EmptyGenericNames, lambda.ReturnType.Span, allowVoid: true);
         var functionType = CreateFunctionType(parameterTypes.ToArray(), returnType);
-        var supported =
-            (returnType.IsSameAs(VelaType.Unit)
-                && parameterTypes.Count <= 1
-                && (parameterTypes.Count == 0
-                    || parameterTypes[0].IsSameAs(VelaType.Text)
-                    || parameterTypes[0].IsSameAs(VelaType.Bool)
-                    || parameterTypes[0].IsSameAs(VelaType.Int)))
-            || (returnType.IsSameAs(VelaType.Text)
-                && parameterTypes.Count <= 1
-                && (parameterTypes.Count == 0 || parameterTypes[0].IsSameAs(VelaType.Text)));
-        if (!supported)
+        if (!VelaCallbackEmitter.IsSupportedSignature(functionType))
         {
             Report(
                 "VEL3030",
                 lambda.Span,
-                "Supported lambdas are Void callbacks (0–1 Text/Bool/Int arg) and Text-returning handlers (0–1 Text arg).",
-                "Use one of the supported callback shapes.");
+                "Supported lambdas accept up to two Bool/Int/UInt/Long/Float/Double/Decimal/Text parameters and return Void or those primitives.",
+                "Narrow the callback signature or split the work into a named function.");
         }
 
-        var name = "__velaCb" + _callbackIdentifier++.ToString(CultureInfo.InvariantCulture);
+        var name = VelaCallbackEmitter.NextCallbackName(ref _callbackIdentifier);
         var previousAsync = _isEmittingAsyncFunction;
         _isEmittingAsyncFunction = false;
-        var returnsText = returnType.IsSameAs(VelaType.Text);
-        var signature = parameterTypes.Count switch
-        {
-            1 when parameterTypes[0].IsSameAs(VelaType.Text) && returnsText =>
-                $"string {name}(string {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
-            1 when parameterTypes[0].IsSameAs(VelaType.Text) =>
-                $"void {name}(string {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
-            1 when parameterTypes[0].IsSameAs(VelaType.Bool) =>
-                $"void {name}(bool {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
-            1 when parameterTypes[0].IsSameAs(VelaType.Int) =>
-                $"void {name}(int {EscapeIdentifier(lambda.Parameters[0].Identifier.Text)})",
-            _ when returnsText => $"string {name}()",
-            _ => $"void {name}()"
-        };
-        _writer.WriteLine(signature);
+        var parameterList = string.Join(
+            ", ",
+            lambda.Parameters.Select((parameter, index) =>
+                $"{CSharpType(parameterTypes[index])} {EscapeIdentifier(parameter.Identifier.Text)}"));
+        var returnCSharp = returnType.IsSameAs(VelaType.Unit) ? "void" : CSharpType(returnType);
+        _writer.WriteLine($"{returnCSharp} {name}({parameterList})");
         _writer.WriteLine("{");
         _writer.Indent();
         var alwaysReturns = EmitBlock(lambda.Body, lambdaScope, returnType, isTailBlock: true);
@@ -1685,7 +1776,9 @@ internal sealed class CSharpEmitter
         _writer.Unindent();
         _writer.WriteLine("}");
         _isEmittingAsyncFunction = previousAsync;
-        return new ExpressionResult(functionType, name);
+        // Local functions capture outer locals; wrap as a typed delegate for Fn assignments.
+        var delegateType = VelaCallbackEmitter.CSharpDelegateType(functionType);
+        return new ExpressionResult(functionType, delegateType == "Delegate" ? name : $"new {delegateType}({name})");
     }
 
     private static VelaType CreateFunctionType(VelaType[] parameterTypes, VelaType returnType)
@@ -1886,6 +1979,7 @@ internal sealed class CSharpEmitter
             "List" => EmitVectorIndex(index, receiver, indexValue),
             "Array" => EmitArrayIndex(index, receiver, indexValue),
             "HashMap" => EmitHashMapIndex(index, receiver, indexValue),
+            "SortedMap" => EmitSortedMapIndex(index, receiver, indexValue),
             _ => ReportUnsupportedIndex(index, receiver, indexValue)
         };
     }
@@ -1914,6 +2008,19 @@ internal sealed class CSharpEmitter
         var keyType = receiver.Type.TypeArguments[0];
         EnsureAssignable(keyType, indexValue.Type, index.Index.Span);
         EnsureHashable(keyType, index.Index.Span);
+        return new ExpressionResult(receiver.Type.TypeArguments[1], $"{receiver.Code}[{indexValue.Code}]");
+    }
+
+    private ExpressionResult EmitSortedMapIndex(IndexExpressionSyntax index, ExpressionResult receiver, ExpressionResult indexValue)
+    {
+        if (receiver.Type.TypeArguments.Count != 2)
+        {
+            return new ExpressionResult(VelaType.Unknown, $"{receiver.Code}[{indexValue.Code}]");
+        }
+
+        var keyType = receiver.Type.TypeArguments[0];
+        EnsureAssignable(keyType, indexValue.Type, index.Index.Span);
+        EnsureOrdered(keyType, index.Index.Span);
         return new ExpressionResult(receiver.Type.TypeArguments[1], $"{receiver.Code}[{indexValue.Code}]");
     }
 
@@ -2077,6 +2184,11 @@ internal sealed class CSharpEmitter
                 EnsureHashable(receiver.Type.TypeArguments[0], index.Index.Span);
                 EnsureAssignable(receiver.Type.TypeArguments[1], value.Type, valueSyntax.Span);
                 return new ExpressionResult(receiver.Type.TypeArguments[1], $"{receiver.Code}[{indexValue.Code}] = {CoerceCode(receiver.Type.TypeArguments[1], value, valueSyntax)}");
+            case "SortedMap" when receiver.Type.TypeArguments.Count == 2:
+                EnsureAssignable(receiver.Type.TypeArguments[0], indexValue.Type, index.Index.Span);
+                EnsureOrdered(receiver.Type.TypeArguments[0], index.Index.Span);
+                EnsureAssignable(receiver.Type.TypeArguments[1], value.Type, valueSyntax.Span);
+                return new ExpressionResult(receiver.Type.TypeArguments[1], $"{receiver.Code}[{indexValue.Code}] = {CoerceCode(receiver.Type.TypeArguments[1], value, valueSyntax)}");
             default:
                 Report("VEL3009", index.Span, $"Type '{receiver.Type}' does not support indexed assignment.", "Use Vector or HashMap indexing, or call a supported collection method.");
                 return new ExpressionResult(VelaType.Unknown, "default");
@@ -2161,8 +2273,50 @@ internal sealed class CSharpEmitter
             return EmitObjectConstruction(call, objectSymbol, arguments, explicitTypes);
         }
 
+        if (scope.TryLookup(name.Identifier.Text, out var callback) && string.Equals(callback.Type.Name, "Fn", StringComparison.Ordinal))
+        {
+            return EmitFunctionValueCall(call, name, callback, arguments, explicitTypes);
+        }
+
         Report("VEL3005", name.Span, $"Unknown function or record '{name.Identifier.Text}'.", "Declare it before calling it or correct the spelling.");
         return new ExpressionResult(VelaType.Unknown, $"{EscapeIdentifier(name.Identifier.Text)}({string.Join(", ", arguments.Select(static argument => argument.Code))})");
+    }
+
+    private ExpressionResult EmitFunctionValueCall(
+        CallExpressionSyntax call,
+        NameExpressionSyntax name,
+        VariableSymbol callback,
+        ExpressionResult[] arguments,
+        VelaType[] explicitTypes)
+    {
+        if (explicitTypes.Length != 0)
+        {
+            Report("VEL3006", call.Span, "Function values do not accept explicit type arguments.");
+        }
+
+        var parameterTypes = callback.Type.TypeArguments.Take(callback.Type.TypeArguments.Count - 1).ToArray();
+        var returnType = callback.Type.TypeArguments[^1];
+        if (arguments.Length != parameterTypes.Length)
+        {
+            Report("VEL3006", call.Span, $"Function value '{name.Identifier.Text}' expects {parameterTypes.Length} argument(s), but received {arguments.Length}.");
+        }
+
+        var argumentCodes = new List<string>();
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            if (index < parameterTypes.Length)
+            {
+                EnsureAssignable(parameterTypes[index], arguments[index].Type, call.Arguments[index].Span);
+                argumentCodes.Add(CoerceCode(parameterTypes[index], arguments[index], call.Arguments[index]));
+            }
+            else
+            {
+                argumentCodes.Add(arguments[index].Code);
+            }
+        }
+
+        var target = callback.Code ?? EscapeIdentifier(name.Identifier.Text);
+        return new ExpressionResult(returnType, $"{target}({string.Join(", ", argumentCodes)})");
     }
 
     private ExpressionResult EmitNumericConversion(CallExpressionSyntax call, ExpressionResult[] arguments, VelaType[] explicitTypes, VelaType targetType)
@@ -2335,10 +2489,32 @@ internal sealed class CSharpEmitter
             "vela.core.http" => EmitHttpCall(call, member.Member, arguments),
             "vela.core.graphql" => EmitGraphqlCall(call, member.Member, arguments),
             "vela.core.grpc" => EmitGrpcCall(call, member.Member, arguments),
+            "vela.core.sqlite" => EmitSqliteCall(call, member.Member, arguments),
+            "vela.core.postgres" => EmitPostgresCall(call, member.Member, arguments),
             "vela.concurrent" => EmitConcurrentCall(call, member.Member, arguments),
             _ => ReportUnknownCoreOperation(member.Member, module)
         };
     }
+
+    private ExpressionResult EmitSqliteCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "open" => EmitCoreFunction(call, operation, arguments, VelaType.SqliteDatabase, [VelaType.Text], values => $"VelaSqlite.Open({values[0]})"),
+        "execute" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.SqliteDatabase, VelaType.Text], values => $"VelaSqlite.Execute({values[0]}, {values[1]})"),
+        "query" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.SqliteDatabase, VelaType.Text], values => $"VelaSqlite.Query({values[0]}, {values[1]})"),
+        "migrate" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.SqliteDatabase, VelaType.Text], values => $"VelaSqlite.Migrate({values[0]}, {values[1]})"),
+        "close" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.SqliteDatabase], values => $"VelaSqlite.Close({values[0]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.sqlite")
+    };
+
+    private ExpressionResult EmitPostgresCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
+    {
+        "open" => EmitCoreFunction(call, operation, arguments, VelaType.PostgresDatabase, [VelaType.Text], values => $"VelaPostgres.Open({values[0]})"),
+        "execute" => EmitCoreFunction(call, operation, arguments, VelaType.Int, [VelaType.PostgresDatabase, VelaType.Text], values => $"VelaPostgres.Execute({values[0]}, {values[1]})"),
+        "query" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.PostgresDatabase, VelaType.Text], values => $"VelaPostgres.Query({values[0]}, {values[1]})"),
+        "migrate" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.PostgresDatabase, VelaType.Text], values => $"VelaPostgres.Migrate({values[0]}, {values[1]})"),
+        "close" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.PostgresDatabase], values => $"VelaPostgres.Close({values[0]})"),
+        _ => ReportUnknownCoreOperation(operation, "vela.core.postgres")
+    };
 
     private ExpressionResult EmitJsonCall(CallExpressionSyntax call, SyntaxToken operation, ExpressionResult[] arguments) => operation.Text switch
     {
@@ -2603,6 +2779,8 @@ internal sealed class CSharpEmitter
         "set_max_body" => EmitCoreFunction(call, operation, arguments, VelaType.Unit, [VelaType.HttpServer, VelaType.Int], values => $"VelaHttp.SetMaxBody({values[0]}, {values[1]})"),
         "client_get" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Text], values => $"VelaHttp.ClientGet({values[0]}, {values[1]}, {values[2]})"),
         "client_post" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int, VelaType.Text, VelaType.Text], values => $"VelaHttp.ClientPost({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
+        "request_get" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Int], values => $"VelaHttpClient.Get({values[0]}, {values[1]})"),
+        "request_post" => EmitCoreFunction(call, operation, arguments, VelaType.Text, [VelaType.Text, VelaType.Text, VelaType.Text, VelaType.Int], values => $"VelaHttpClient.Post({values[0]}, {values[1]}, {values[2]}, {values[3]})"),
         _ => ReportUnknownCoreOperation(operation, "vela.core.http")
     };
 
@@ -2918,7 +3096,7 @@ internal sealed class CSharpEmitter
         var parameterTypes = exportItem.Parameters.Select(ParseAbiType).ToArray();
         if (!IsInteropImportSafe(returnType) || parameterTypes.Any(type => !IsInteropImportSafe(type)))
         {
-            Report("VEL3010", member.Member.Span, $"Package function '{member.Member.Text}' uses an ABI type not supported by the current native importer.", "Use a primitive numeric FFI signature for this import.");
+            Report("VEL3010", member.Member.Span, $"Package function '{member.Member.Text}' uses an ABI type not supported by the current native importer.", "Use Bool, Int, UInt, Long, Float, Double, Decimal, Text, or Unit at the ABI boundary.");
             return new ExpressionResult(VelaType.Unknown, "default");
         }
 
@@ -2959,6 +3137,11 @@ internal sealed class CSharpEmitter
             "Stack" when receiver.Type.TypeArguments.Count == 1 => EmitStackMethod(call, receiver, member.Member, arguments),
             "RingBuffer" when receiver.Type.TypeArguments.Count == 1 => EmitRingBufferMethod(call, receiver, member.Member, arguments),
             "BitSet" => EmitBitSetMethod(call, receiver, member.Member, arguments),
+            "SortedMap" when receiver.Type.TypeArguments.Count == 2 => EmitSortedMapMethod(call, receiver, member.Member, arguments),
+            "SortedSet" when receiver.Type.TypeArguments.Count == 1 => EmitSortedSetMethod(call, receiver, member.Member, arguments),
+            "Deque" when receiver.Type.TypeArguments.Count == 1 => EmitDequeMethod(call, receiver, member.Member, arguments),
+            "PriorityQueue" when receiver.Type.TypeArguments.Count == 1 => EmitPriorityQueueMethod(call, receiver, member.Member, arguments),
+            "LinkedList" when receiver.Type.TypeArguments.Count == 1 => EmitLinkedListMethod(call, receiver, member.Member, arguments),
             "Array" when receiver.Type.TypeArguments.Count == 1 => ReportUnsupportedCollectionMethod(call, receiver, member.Member, arguments),
             _ => ReportUnsupportedCollectionMethod(call, receiver, member.Member, arguments)
         };
@@ -3098,6 +3281,90 @@ internal sealed class CSharpEmitter
         };
     }
 
+    private ExpressionResult EmitSortedMapMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
+    {
+        var key = receiver.Type.TypeArguments[0];
+        var value = receiver.Type.TypeArguments[1];
+        EnsureOrdered(key, member.Span);
+        return member.Text switch
+        {
+            "set" => EmitCollectionOperation(call, receiver, member, "Set", VelaType.Unit, arguments, [key, value]),
+            "try_get" => EmitCollectionOperation(call, receiver, member, "TryGet", new VelaType("Option", [value]), arguments, [key]),
+            "contains" => EmitCollectionOperation(call, receiver, member, "Contains", VelaType.Bool, arguments, [key]),
+            "remove" => EmitCollectionOperation(call, receiver, member, "Remove", VelaType.Bool, arguments, [key]),
+            "first_key" => EmitCollectionOperation(call, receiver, member, "FirstKey", new VelaType("Option", [key]), arguments, []),
+            "last_key" => EmitCollectionOperation(call, receiver, member, "LastKey", new VelaType("Option", [key]), arguments, []),
+            "clear" => EmitCollectionOperation(call, receiver, member, "Clear", VelaType.Unit, arguments, []),
+            _ => ReportUnsupportedCollectionMethod(call, receiver, member, arguments)
+        };
+    }
+
+    private ExpressionResult EmitSortedSetMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
+    {
+        var element = receiver.Type.TypeArguments[0];
+        EnsureOrdered(element, member.Span);
+        return member.Text switch
+        {
+            "add" => EmitCollectionOperation(call, receiver, member, "Add", VelaType.Bool, arguments, [element]),
+            "contains" => EmitCollectionOperation(call, receiver, member, "Contains", VelaType.Bool, arguments, [element]),
+            "remove" => EmitCollectionOperation(call, receiver, member, "Remove", VelaType.Bool, arguments, [element]),
+            "first" => EmitCollectionOperation(call, receiver, member, "First", new VelaType("Option", [element]), arguments, []),
+            "last" => EmitCollectionOperation(call, receiver, member, "Last", new VelaType("Option", [element]), arguments, []),
+            "clear" => EmitCollectionOperation(call, receiver, member, "Clear", VelaType.Unit, arguments, []),
+            _ => ReportUnsupportedCollectionMethod(call, receiver, member, arguments)
+        };
+    }
+
+    private ExpressionResult EmitDequeMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
+    {
+        var element = receiver.Type.TypeArguments[0];
+        return member.Text switch
+        {
+            "push_front" => EmitCollectionOperation(call, receiver, member, "PushFront", VelaType.Unit, arguments, [element]),
+            "push_back" => EmitCollectionOperation(call, receiver, member, "PushBack", VelaType.Unit, arguments, [element]),
+            "pop_front" => EmitCollectionOperation(call, receiver, member, "PopFront", new VelaType("Option", [element]), arguments, []),
+            "pop_back" => EmitCollectionOperation(call, receiver, member, "PopBack", new VelaType("Option", [element]), arguments, []),
+            "peek_front" => EmitCollectionOperation(call, receiver, member, "PeekFront", new VelaType("Option", [element]), arguments, []),
+            "peek_back" => EmitCollectionOperation(call, receiver, member, "PeekBack", new VelaType("Option", [element]), arguments, []),
+            "reserve" => EmitCollectionOperation(call, receiver, member, "Reserve", VelaType.Unit, arguments, [VelaType.WholeNumber]),
+            "clear" => EmitCollectionOperation(call, receiver, member, "Clear", VelaType.Unit, arguments, []),
+            _ => ReportUnsupportedCollectionMethod(call, receiver, member, arguments)
+        };
+    }
+
+    private ExpressionResult EmitPriorityQueueMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
+    {
+        var element = receiver.Type.TypeArguments[0];
+        EnsureOrdered(element, member.Span);
+        return member.Text switch
+        {
+            "push" => EmitCollectionOperation(call, receiver, member, "Push", VelaType.Unit, arguments, [element]),
+            "pop" => EmitCollectionOperation(call, receiver, member, "Pop", new VelaType("Option", [element]), arguments, []),
+            "peek" => EmitCollectionOperation(call, receiver, member, "Peek", new VelaType("Option", [element]), arguments, []),
+            "reserve" => EmitCollectionOperation(call, receiver, member, "Reserve", VelaType.Unit, arguments, [VelaType.WholeNumber]),
+            "clear" => EmitCollectionOperation(call, receiver, member, "Clear", VelaType.Unit, arguments, []),
+            _ => ReportUnsupportedCollectionMethod(call, receiver, member, arguments)
+        };
+    }
+
+    private ExpressionResult EmitLinkedListMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
+    {
+        var element = receiver.Type.TypeArguments[0];
+        return member.Text switch
+        {
+            "push_front" => EmitCollectionOperation(call, receiver, member, "PushFront", VelaType.Unit, arguments, [element]),
+            "push_back" => EmitCollectionOperation(call, receiver, member, "PushBack", VelaType.Unit, arguments, [element]),
+            "pop_front" => EmitCollectionOperation(call, receiver, member, "PopFront", new VelaType("Option", [element]), arguments, []),
+            "pop_back" => EmitCollectionOperation(call, receiver, member, "PopBack", new VelaType("Option", [element]), arguments, []),
+            "peek_front" => EmitCollectionOperation(call, receiver, member, "PeekFront", new VelaType("Option", [element]), arguments, []),
+            "peek_back" => EmitCollectionOperation(call, receiver, member, "PeekBack", new VelaType("Option", [element]), arguments, []),
+            "contains" => EmitCollectionOperation(call, receiver, member, "Contains", VelaType.Bool, arguments, [element]),
+            "remove" => EmitCollectionOperation(call, receiver, member, "Remove", VelaType.Bool, arguments, [element]),
+            "clear" => EmitCollectionOperation(call, receiver, member, "Clear", VelaType.Unit, arguments, []),
+            _ => ReportUnsupportedCollectionMethod(call, receiver, member, arguments)
+        };
+    }
+
     private ExpressionResult EmitBitSetMethod(CallExpressionSyntax call, ExpressionResult receiver, SyntaxToken member, ExpressionResult[] arguments)
     {
         return member.Text switch
@@ -3178,6 +3445,11 @@ internal sealed class CSharpEmitter
             "RingBuffer" => EmitGenericCollectionConstruction(call, name, "RingBuffer", "RingBuffer", 1, arguments, explicitTypes, capacityRequired: true),
             "Array" => EmitGenericCollectionConstruction(call, name, "VelaArray", "Array", 1, arguments, explicitTypes, capacityRequired: true),
             "BitSet" => EmitBitSetConstruction(call, arguments, explicitTypes),
+            "SortedMap" => EmitGenericCollectionConstruction(call, name, "VelaSortedMap", "SortedMap", 2, arguments, explicitTypes, capacityRequired: false, capacitySupported: false),
+            "SortedSet" => EmitGenericCollectionConstruction(call, name, "VelaSortedSet", "SortedSet", 1, arguments, explicitTypes, capacityRequired: false, capacitySupported: false),
+            "Deque" => EmitGenericCollectionConstruction(call, name, "VelaDeque", "Deque", 1, arguments, explicitTypes, capacityRequired: false),
+            "PriorityQueue" => EmitGenericCollectionConstruction(call, name, "VelaPriorityQueue", "PriorityQueue", 1, arguments, explicitTypes, capacityRequired: false),
+            "LinkedList" => EmitGenericCollectionConstruction(call, name, "VelaLinkedList", "LinkedList", 1, arguments, explicitTypes, capacityRequired: false, capacitySupported: false),
             _ => throw new InvalidOperationException($"Unsupported collection constructor '{name}'.")
         };
     }
@@ -3190,12 +3462,28 @@ internal sealed class CSharpEmitter
         int expectedTypeArgumentCount,
         ExpressionResult[] arguments,
         VelaType[] explicitTypes,
-        bool capacityRequired)
+        bool capacityRequired,
+        bool capacitySupported = true)
     {
         var typeArguments = ValidateCollectionTypeArguments(call, sourceName, explicitTypes, expectedTypeArgumentCount);
         if (canonicalName is "HashMap" or "HashSet")
         {
             EnsureHashable(typeArguments[0], call.Span);
+        }
+
+        if (canonicalName is "SortedMap" or "SortedSet" or "PriorityQueue")
+        {
+            EnsureOrdered(typeArguments[0], call.Span);
+        }
+
+        if (!capacitySupported)
+        {
+            if (arguments.Length != 0)
+            {
+                Report("VEL3006", call.Span, $"Collection '{sourceName}' does not accept constructor arguments.");
+            }
+
+            return new ExpressionResult(new VelaType(canonicalName, typeArguments), $"new {runtimeName}<{string.Join(", ", typeArguments.Select(CSharpType))}>()");
         }
 
         ValidateCapacityConstructorArguments(call, sourceName, arguments, capacityRequired);
@@ -3633,12 +3921,14 @@ internal sealed class CSharpEmitter
             "HttpServer" => VelaType.HttpServer,
             "GraphqlSchema" => VelaType.GraphqlSchema,
             "GrpcServer" => VelaType.GrpcServer,
+            "SqliteDatabase" => VelaType.SqliteDatabase,
+            "PostgresDatabase" => VelaType.PostgresDatabase,
             "Cancellation" => VelaType.Cancellation,
             "ProcessResult" => VelaType.ProcessResult,
             "Void" or "Unit" when allowVoid => VelaType.Unit,
             "Void" or "Unit" => ReportVoidValueType(named),
             "List" or "Vector" => new VelaType("List", arguments),
-            "Array" or "Result" or "Option" or "Future" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" => new VelaType(named.Identifier.Text, arguments),
+            "Array" or "Result" or "Option" or "Future" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" or "SortedMap" or "SortedSet" or "Deque" or "PriorityQueue" or "LinkedList" => new VelaType(named.Identifier.Text, arguments),
             _ when RuntimeExceptionRanks.ContainsKey(named.Identifier.Text) && arguments.Length == 0 => new VelaType(named.Identifier.Text),
             _ when genericNames.Contains(named.Identifier.Text) && arguments.Length == 0 => new VelaType(named.Identifier.Text),
             _ when _records.ContainsKey(named.Identifier.Text) || _objects.ContainsKey(named.Identifier.Text) || _enums.ContainsKey(named.Identifier.Text) => new VelaType(named.Identifier.Text, arguments),
@@ -3670,8 +3960,8 @@ internal sealed class CSharpEmitter
     {
         int expected = type.Name switch
         {
-            "List" or "Array" or "Option" or "Future" or "HashSet" or "Queue" or "Stack" or "RingBuffer" => 1,
-            "Result" or "HashMap" => 2,
+            "List" or "Array" or "Option" or "Future" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "SortedSet" or "Deque" or "PriorityQueue" or "LinkedList" => 1,
+            "Result" or "HashMap" or "SortedMap" => 2,
             "BitSet" => 0,
             _ when _records.TryGetValue(type.Name, out var record) => record.GenericNames.Length,
             _ when _objects.TryGetValue(type.Name, out var objectDeclaration) => objectDeclaration.GenericNames.Length,
@@ -3847,7 +4137,7 @@ internal sealed class CSharpEmitter
 
     private static bool IsFfiSafe(VelaType type) => type.Name is "Bool" or "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal" or "Text" or "Unit";
 
-    private static bool IsInteropImportSafe(VelaType type) => type.Name is "Bool" or "Int" or "UInt" or "Long" or "Float" or "Double" or "Unit";
+    private static bool IsInteropImportSafe(VelaType type) => type.Name is "Bool" or "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal" or "Text" or "Unit";
 
     private static VelaType ParseAbiType(string value) => value switch
     {
@@ -4042,22 +4332,32 @@ internal sealed class CSharpEmitter
         Report("VEL3006", span, $"Type '{type}' cannot be used as a hash key.", "Use a primitive value, an immutable record, Option, or Result as the key.");
     }
 
+    private void EnsureOrdered(VelaType type, TextSpan span)
+    {
+        if (type.IsUnknown || type.Name is "Int" or "UInt" or "Long" or "Float" or "Double" or "Decimal" or "Bool" or "Text")
+        {
+            return;
+        }
+
+        Report("VEL3006", span, $"Type '{type}' does not have a defined ordering.", "Use a numeric type, Bool, or Text for ordered collections.");
+    }
+
     private VelaType GetIterationElementType(VelaType collectionType, TextSpan span)
     {
-        if (collectionType.Name is "List" or "Array" or "HashSet" or "Queue" or "Stack" or "RingBuffer" && collectionType.TypeArguments.Count == 1)
+        if (collectionType.Name is "List" or "Array" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "SortedSet" or "Deque" or "LinkedList" && collectionType.TypeArguments.Count == 1)
         {
             return collectionType.TypeArguments[0];
         }
 
-        Report("VEL3006", span, $"Type '{collectionType}' cannot be iterated.", "Use Vector, HashSet, Queue, Stack, or RingBuffer in a for loop.");
+        Report("VEL3006", span, $"Type '{collectionType}' cannot be iterated.", "Use Vector, HashSet, SortedSet, Queue, Stack, RingBuffer, Deque, or LinkedList in a for loop.");
         return VelaType.Unknown;
     }
 
-    private static bool HasCountProperty(VelaType type) => type.Name is "List" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer";
+    private static bool HasCountProperty(VelaType type) => type.Name is "List" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "SortedMap" or "SortedSet" or "Deque" or "PriorityQueue" or "LinkedList";
 
-    private static bool HasCapacityProperty(VelaType type) => type.Name is "List" or "Queue" or "RingBuffer" or "BitSet";
+    private static bool HasCapacityProperty(VelaType type) => type.Name is "List" or "Queue" or "RingBuffer" or "BitSet" or "Deque" or "PriorityQueue";
 
-    private static bool IsCollectionConstructor(string name) => name is "List" or "Vector" or "Array" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet";
+    private static bool IsCollectionConstructor(string name) => name is "List" or "Vector" or "Array" or "HashMap" or "HashSet" or "Queue" or "Stack" or "RingBuffer" or "BitSet" or "SortedMap" or "SortedSet" or "Deque" or "PriorityQueue" or "LinkedList";
 
     private void AddVariable(Scope scope, string name, VariableSymbol symbol, TextSpan span)
     {
@@ -4091,15 +4391,11 @@ internal sealed class CSharpEmitter
         "HttpServer" => "HttpServer",
         "GraphqlSchema" => "VelaGraphqlSchema",
         "GrpcServer" => "GrpcServer",
+        "SqliteDatabase" => "VelaSqliteDatabase",
+        "PostgresDatabase" => "VelaPostgresDatabase",
         "Cancellation" => "VelaCancellation",
         "ProcessResult" => "VelaProcessResult",
-        "Fn" when type.TypeArguments.Count == 1 && type.TypeArguments[0].IsSameAs(VelaType.Unit) => "Action",
-        "Fn" when type.TypeArguments.Count == 1 && type.TypeArguments[0].IsSameAs(VelaType.Text) => "Func<string>",
-        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Text) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<string>",
-        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Bool) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<bool>",
-        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Int) && type.TypeArguments[1].IsSameAs(VelaType.Unit) => "Action<int>",
-        "Fn" when type.TypeArguments.Count == 2 && type.TypeArguments[0].IsSameAs(VelaType.Text) && type.TypeArguments[1].IsSameAs(VelaType.Text) => "Func<string, string>",
-        "Fn" => "Delegate",
+        "Fn" => VelaCallbackEmitter.CSharpDelegateType(type),
         "Unit" => "void",
         "Option" when type.TypeArguments.Count == 1 => $"Option<{CSharpType(type.TypeArguments[0])}>",
         "Result" when type.TypeArguments.Count == 2 => $"Result<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",
@@ -4112,6 +4408,11 @@ internal sealed class CSharpEmitter
         "Stack" when type.TypeArguments.Count == 1 => $"VelaStack<{CSharpType(type.TypeArguments[0])}>",
         "RingBuffer" when type.TypeArguments.Count == 1 => $"RingBuffer<{CSharpType(type.TypeArguments[0])}>",
         "BitSet" => "BitSet",
+        "SortedMap" when type.TypeArguments.Count == 2 => $"VelaSortedMap<{CSharpType(type.TypeArguments[0])}, {CSharpType(type.TypeArguments[1])}>",
+        "SortedSet" when type.TypeArguments.Count == 1 => $"VelaSortedSet<{CSharpType(type.TypeArguments[0])}>",
+        "Deque" when type.TypeArguments.Count == 1 => $"VelaDeque<{CSharpType(type.TypeArguments[0])}>",
+        "PriorityQueue" when type.TypeArguments.Count == 1 => $"VelaPriorityQueue<{CSharpType(type.TypeArguments[0])}>",
+        "LinkedList" when type.TypeArguments.Count == 1 => $"VelaLinkedList<{CSharpType(type.TypeArguments[0])}>",
         "Nil" => "object?",
         "<unknown>" => "object",
         _ when type.TypeArguments.Count == 0 => EscapeIdentifier(type.Name),
