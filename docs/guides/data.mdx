@@ -1,0 +1,38 @@
+---
+title: Databases
+description: SQLite and PostgreSQL adapters for Vela programs.
+---
+
+# Databases
+
+Vela exposes databases as opt-in core modules with isolated runtimes.
+
+## SQLite
+
+```vela
+include vela.core.sqlite as db;
+
+fn main() -> Void {
+    let database = db.open("app.db");
+    defer db.close(database);
+    db.migrate(database, "migrations");
+    db.execute(database, "insert into items(name) values ('vela');");
+    print(db.query(database, "select * from items;"));
+}
+```
+
+`db.migrate` applies `*.sql` files in sorted file-name order and records them in `_vela_migrations`.
+
+## PostgreSQL
+
+```vela
+include vela.core.postgres as db;
+
+fn main() -> Void {
+    let database = db.open("Host=localhost;Username=vela;Password=vela;Database=vela");
+    defer db.close(database);
+    db.migrate(database, "migrations");
+}
+```
+
+Both adapters return query results as JSON text for a simple AOT-friendly surface.

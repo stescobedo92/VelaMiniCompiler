@@ -12,9 +12,10 @@ description: Opt-in vela.core.* surfaces.
 | `json` / `text` / `encoding` / `crypto` | data & security helpers |
 | `tcp` | bounded TCP |
 | `gui` | Avalonia desktop UI |
-| `http` / `graphql` | REST + GraphQL hosting |
+| `http` / `graphql` | REST + GraphQL hosting; TLS client via `request_get` / `request_post` |
 | `grpc` | unary gRPC hosting |
+| `sqlite` / `postgres` | databases + directory migrations |
 | `vela.concurrent` | concurrency primitives |
 
-Importing `gui`, `http`/`graphql`, or `grpc` pulls the matching adapter project
-into the generated `.csproj`.
+Importing `gui`, `http`/`graphql`, `grpc`, `sqlite`, or `postgres` pulls the
+matching adapter project into the generated `.csproj`.

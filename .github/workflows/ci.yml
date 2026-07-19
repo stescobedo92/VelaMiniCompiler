@@ -61,6 +61,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet test tests/Vela.Grpc.Runtime.Tests/Vela.Grpc.Runtime.Tests.csproj --configuration Release --logger "trx;LogFileName=grpc.trx"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test tests/Vela.Sqlite.Runtime.Tests/Vela.Sqlite.Runtime.Tests.csproj --configuration Release --logger "trx;LogFileName=sqlite.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test tests/Vela.Postgres.Runtime.Tests/Vela.Postgres.Runtime.Tests.csproj --configuration Release --logger "trx;LogFileName=postgres.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test tests/Vela.Packages.Tests/Vela.Packages.Tests.csproj --configuration Release --logger "trx;LogFileName=packages.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test tests/Vela.LanguageServer.Tests/Vela.LanguageServer.Tests.csproj --configuration Release --logger "trx;LogFileName=lsp.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check representative Vela programs
         shell: pwsh
@@ -79,6 +87,9 @@ jobs:
             'examples/api-graphql.vela',
             'examples/api-grpc.vela',
             'examples/ui-rich-controls.vela',
+            'examples/collections-extended.vela',
+            'examples/lambda-capture.vela',
+            'examples/db-sqlite.vela',
             'examples/packages/vela-cli-app',
             'examples/packages/vela-logging-app',
             'examples/packages/vela-server-tool'

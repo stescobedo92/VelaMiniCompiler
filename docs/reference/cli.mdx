@@ -1,6 +1,6 @@
 ---
 title: CLI reference
-description: vela check, run, build, and related flags.
+description: vela check, run, build, package, and related flags.
 ---
 
 # CLI reference
@@ -10,6 +10,10 @@ vela check <file|package>
 vela run <file|package> [-- program args]
 vela build <file|package> [--output dir] [--mode native-aot|single-file|framework-dependent]
 vela targets
+vela package pack [package-directory] [--version semver] [--output dir]
+vela package login [--source url] [--api-key key]
+vela package push <archive.vpkg> [--source url] [--api-key key]
+vela package logout [--source url]
 ```
 
 Common flags: `--color auto|always|never`, verbosity / `--quiet`.
@@ -17,3 +21,26 @@ Common flags: `--color auto|always|never`, verbosity / `--quiet`.
 `build` defaults to Native AOT. GUI/HTTP/gRPC programs force
 framework-dependent publish when AOT is requested, because those adapters are
 not AOT-trimmed in 0.3.0.
+
+## Package publishing
+
+`vela package` implements the gallery publish workflow:
+
+- **pack** reads `vela.toml`, validates the version as SemVer 2.0 (prerelease
+  suffixes supported), and writes `<name>.<version>.vpkg` under `artifacts/`
+  (or `--output`). The archive embeds a `vpkg.json` manifest with the package
+  name, version, kind, and a SHA-256 hash per file, and uses fixed timestamps
+  so repeated packs are byte-identical.
+- **login** stores an API key for a registry source in
+  `~/.vela/credentials.json`. The key comes from `--api-key`, the
+  `VELA_API_KEY` environment variable, or a hidden interactive prompt. On
+  Linux/macOS the file is restricted to owner read/write.
+- **push** uploads a `.vpkg` archive. A source ending in `.json` is treated as
+  a NuGet-style service index: its `resources` array must advertise a
+  `PackagePublish` entry whose `@id` becomes the upload endpoint. Any other
+  source URL is used directly. The key is sent in the `X-Vela-ApiKey` header;
+  HTTP 401/403, 409 (duplicate version), and 413 (too large) map to
+  actionable errors.
+- **logout** removes the stored credential for a source.
+
+The default source is `https://packages.vela.dev/v3/index.json`.

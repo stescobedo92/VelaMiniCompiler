@@ -18,8 +18,10 @@ statements.
   zero, floating non-finite results, null dereferences, invalid casts, and array
   bounds failures become Vela runtime errors with source locations.
 - **Fast core collections.** `Vector`, `HashMap`, `HashSet`, `Queue`, `Stack`,
-  `RingBuffer`, and `BitSet` use Native-AOT-safe .NET data structures. Hash-map
-  and hash-set lookup/insert/remove are expected O(1); vector indexing is O(1).
+  `RingBuffer`, `BitSet`, `SortedMap`, `SortedSet`, `Deque`, `PriorityQueue`,
+  and `LinkedList` use Native-AOT-safe .NET data structures. Hash-map and
+  hash-set lookup/insert/remove are expected O(1); sorted map/set operations are
+  O(log n); vector indexing is O(1).
 - **A familiar object model.** Classes use mandatory primary constructors and
   may implement any number of compiler-validated interfaces. Structs, records,
   generics, arrays, nullable values, boxing, and checked unboxing are available.
@@ -62,14 +64,18 @@ statements.
 - Explicit core modules: `json`, `crypto`, `tcp`, `text`, `math`, `time`,
   `random`, expanded `io`, `encoding`, `env`, `system`, `console`,
   cross-platform Avalonia `gui`, REST/GraphQL (`http` / `graphql`), gRPC
-  (`grpc`), and `vela.concurrent`.
+  (`grpc`), SQLite/PostgreSQL (`sqlite` / `postgres`), and `vela.concurrent`.
+- Typed callbacks (`Fn<...>`) with capturing lambdas (up to two primitive
+  parameters) and function-value calls.
 - Source-linked `vela.std.cli` and `vela.std.log` packages for typed command
   definitions, O(1) expected option lookup, level filtering, terminal-aware
   color, stderr routing, and structured JSON that reuses `vela.core.json`.
-- `public ffi fn` exports scalar native ABI functions. Cross-package calls
-  currently support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, and `Void`;
-  `Text` and `Decimal` are emitted as library ABI values but are not yet accepted
-  by the importing call generator.
+- `public ffi fn` exports scalar native ABI functions. Cross-package imports
+  support `Bool`, `Int`, `UInt`, `Long`, `Float`, `Double`, `Decimal`, `Text`,
+  and `Void`, including C11 header generation via `VelaAbiHeaderWriter`.
+- Package restore client (`vela package restore`) for `file://` and HTTP
+  registries (`.vlpkg`), plus a minimal self-hosted registry server.
+- Language server foundation (`vela-lsp`) with `--stdio` and `--check-file`.
 
 ## Repository layout
 
@@ -201,6 +207,30 @@ The example uses `vela.std.cli`, `vela.std.config`, `vela.std.log`, and
 `vela.std.test`. `vela.std.config` and `vela.std.log` route all JSON work through
 the one `vela.core.json` implementation; they do not contain another parser.
 
+## Publish a package to the Vela gallery
+
+`vela package` covers the NuGet-style publish workflow used by the Vela
+packages site: pack a `.vpkg` archive from a `vela.toml` package, authenticate
+once per registry source, and push.
+
+```powershell
+# 1. Pack your module (SemVer 2.0; --version overrides the manifest version)
+vela package pack .\src\MyLib --version 1.0.0
+
+# 2. Authenticate with an API key from your publisher profile
+vela package login --source https://packages.vela.dev/v3/index.json
+
+# 3. Push the .vpkg artifact to the gallery
+vela package push .\src\MyLib\artifacts\MyLib.1.0.0.vpkg
+```
+
+The API key can also come from `--api-key` or the `VELA_API_KEY` environment
+variable; interactive logins prompt with hidden input. Credentials are stored
+per source in `~/.vela/credentials.json` (owner read/write only on
+Linux/macOS). A source ending in `.json` is treated as a NuGet-style service
+index and its `PackagePublish` resource is used as the upload endpoint; any
+other URL is used directly. `vela package logout` removes a stored credential.
+
 Pass arguments to a Vela program after `--`:
 
 ```powershell
@@ -222,6 +252,7 @@ Try the progressive examples:
 
 ```powershell
 dotnet run --project .\src\Vela.Cli -- run .\examples\control-flow.vela
+dotnet run --project .\src\Vela.Cli -- run .\examples\collections-extended.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\core-text-math.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\secure-message.vela
 dotnet run --project .\src\Vela.Cli -- run .\examples\file-json-report.vela

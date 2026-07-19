@@ -1,0 +1,23 @@
+---
+title: UI strategy
+description: Avalonia is the supported desktop GUI track for Vela.
+---
+
+# UI strategy
+
+Vela ships desktop GUI through **Avalonia** via `vela.core.gui` and `Vela.Ui.Runtime`.
+
+## What is supported today
+
+- Desktop forms and controls on Windows, Linux, and macOS
+- Event callbacks (`on_click`, `on_text_changed`, `on_value_changed`, …)
+- Richer controls such as textarea, slider, numeric, radio, and separator
+
+## What is intentionally deferred
+
+- **Uno Platform** multi-target UI (mobile/web) remains a future option, not the current supported track
+- Native AOT for GUI apps is deferred; GUI hosts publish framework-dependent
+
+## Guidance
+
+Prefer Avalonia examples under `examples/ui-*.vela` and the [GUI guide](/guides/gui). If you need mobile or web UI later, that will be a separate adapter with its own capability entry—not a replacement for the Avalonia desktop runtime.

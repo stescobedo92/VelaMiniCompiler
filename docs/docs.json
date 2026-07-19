@@ -73,6 +73,8 @@
             "group": "Build apps",
             "pages": [
               "guides/gui",
+              "guides/ui-strategy",
+              "guides/data",
               "guides/rest",
               "guides/graphql",
               "guides/grpc",
