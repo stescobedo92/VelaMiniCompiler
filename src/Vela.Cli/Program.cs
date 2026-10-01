@@ -1,6 +1,9 @@
+using System.Text;
 using Spectre.Console;
 using Vela.Backend;
+using Vela.Core.Analysis;
 using Vela.Core.Diagnostics;
+using Vela.Core.Formatting;
 using Vela.Core.Source;
 
 return await VelaCommandLine.RunAsync(args);
@@ -9,7 +12,19 @@ internal static class VelaCommandLine
 {
     public static async Task<int> RunAsync(string[] arguments)
     {
-        var options = CommandOptions.Parse(arguments);
+        CommandOptions options;
+        try
+        {
+            options = CommandOptions.Parse(arguments);
+        }
+        catch (ArgumentException exception)
+        {
+            // Options are parsed before the renderer exists, so usage errors
+            // are reported plainly instead of crashing with a stack trace.
+            Console.Error.WriteLine($"error VEL9000: {exception.Message}");
+            return 2;
+        }
+
         var renderer = new VelaConsoleRenderer(options);
         try
         {
@@ -25,6 +40,10 @@ internal static class VelaCommandLine
                 "run" => await RunProgramAsync(options, renderer),
                 "build" => await BuildAsync(options, renderer),
                 "targets" => ShowTargets(options, renderer),
+                "fmt" => Format(options, renderer),
+                "vet" => Vet(options, renderer),
+                "test" => await TestAsync(options, renderer),
+                "repl" => await ReplAsync(renderer),
                 "package" => await PackageAsync(options, renderer),
                 _ => Fail(renderer, $"Unknown command '{options.Command}'. Run 'vela --help' for usage.")
             };
@@ -73,6 +92,175 @@ internal static class VelaCommandLine
         return 0;
     }
 
+    private static int Format(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        if (options.FormatCheck && options.FormatWrite)
+        {
+            return Fail(renderer, "Options --check and --write are mutually exclusive.");
+        }
+
+        var input = ResolveInput(options, renderer, out var package);
+        if (input is null)
+        {
+            return 2;
+        }
+
+        renderer.Status("Checking", input);
+        var imports = package is null ? [] : CreateCheckImports(package, BuildTargetResolver.Resolve(BuildTargetResolver.Auto).RuntimeIdentifier);
+        var compilation = Compile(input, imports, package);
+        renderer.PrintDiagnostics(compilation);
+        if (compilation.HasErrors)
+        {
+            return 1;
+        }
+
+        var files = CollectFormatFiles(input, package);
+        var pending = new List<(string Path, string Text)>();
+        foreach (var file in files)
+        {
+            if (!TryReadSourceFile(file, renderer, out var original))
+            {
+                return 2;
+            }
+
+            var formatted = VelaFormatter.Format(new SourceText(original, file));
+            if (formatted.HasErrors)
+            {
+                foreach (var diagnostic in formatted.Diagnostics.Where(static item => item.Severity == DiagnosticSeverity.Error))
+                {
+                    var location = new SourceText(original, file).GetLocation(diagnostic.Span);
+                    renderer.Error(diagnostic.Code, $"{location.FilePath}:{location.Line}:{location.Column} {diagnostic.Message}");
+                }
+
+                return 1;
+            }
+
+            if (formatted.Text != original)
+            {
+                pending.Add((file, formatted.Text));
+            }
+        }
+
+        if (options.FormatCheck)
+        {
+            if (pending.Count == 0)
+            {
+                renderer.Success("Finished", "everything already formatted");
+                return 0;
+            }
+
+            foreach (var (path, _) in pending)
+            {
+                renderer.Detail("Unformatted", path);
+            }
+
+            renderer.Error("FMT001", $"{pending.Count} file(s) need formatting. Run 'vela fmt --write'.");
+            return 1;
+        }
+
+        foreach (var (path, text) in pending)
+        {
+            WriteSourceFile(path, text);
+            renderer.Detail("Formatted", path);
+        }
+
+        renderer.Success("Finished", pending.Count == 0 ? "everything already formatted" : $"formatted {pending.Count} file(s)");
+        return 0;
+    }
+
+    private static int Vet(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        var input = ResolveInput(options, renderer, out var package);
+        if (input is null)
+        {
+            return 2;
+        }
+
+        renderer.Status("Checking", input);
+        var imports = package is null ? [] : CreateCheckImports(package, BuildTargetResolver.Resolve(BuildTargetResolver.Auto).RuntimeIdentifier);
+        var compilation = Compile(input, imports, package);
+        renderer.PrintDiagnostics(compilation);
+        if (compilation.HasErrors)
+        {
+            return 1;
+        }
+
+        var findings = VelaLinter.Analyze(compilation.ParseResult.Root);
+        if (findings.Length == 0)
+        {
+            renderer.Success("Finished", "no issues found");
+            return 0;
+        }
+
+        renderer.PrintDiagnostics(compilation with { Diagnostics = [.. compilation.Diagnostics, .. findings] });
+        if (options.DenyWarnings)
+        {
+            renderer.Error("VET000", $"{findings.Length} warning(s) denied by --deny-warnings.");
+            return 1;
+        }
+
+        renderer.Detail("Warnings", $"{findings.Length} warning(s)");
+        return 0;
+    }
+
+    private static string[] CollectFormatFiles(string entryPoint, VelaPackageGraph? package)
+    {
+        if (package is null)
+        {
+            return [entryPoint];
+        }
+
+        // Format the sources owned by this package only: never touch registry
+        // dependencies, and skip the local build output.
+        return Directory.EnumerateFiles(package.Root.RootDirectory, "*.vela", SearchOption.AllDirectories)
+            .Where(static path => !path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Contains("target", StringComparer.OrdinalIgnoreCase))
+            .OrderBy(static path => path, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static bool TryReadSourceFile(string path, VelaConsoleRenderer renderer, out string text)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = File.ReadAllBytes(path);
+        }
+        catch (IOException exception)
+        {
+            renderer.Error("VEL9000", $"Unable to read '{path}': {exception.Message}");
+            text = string.Empty;
+            return false;
+        }
+
+        var content = bytes;
+        if (content.Length >= 3 && content[0] == 0xEF && content[1] == 0xBB && content[2] == 0xBF)
+        {
+            content = content[3..];
+        }
+
+        try
+        {
+            text = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true).GetString(content);
+            return true;
+        }
+        catch (DecoderFallbackException)
+        {
+            renderer.Error("VEL9000", $"Unable to format '{path}': the file is not valid UTF-8.");
+            text = string.Empty;
+            return false;
+        }
+    }
+
+    private static void WriteSourceFile(string path, string text)
+    {
+        var preamble = HasUtf8Preamble(File.ReadAllBytes(path)) ? new byte[] { 0xEF, 0xBB, 0xBF } : [];
+        File.WriteAllBytes(path, [.. preamble, .. Encoding.UTF8.GetBytes(text)]);
+    }
+
+    private static bool HasUtf8Preamble(byte[] bytes) =>
+        bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+
     private static async Task<int> RunProgramAsync(CommandOptions options, VelaConsoleRenderer renderer)
     {
         var input = ResolveInput(options, renderer, out var package);
@@ -100,17 +288,25 @@ internal static class VelaCommandLine
         }
 
         renderer.Status("Running", Path.GetFileName(input));
+        var result = await RunCompiledAsync(compilation, input, options.ProgramArguments);
+        VelaConsoleRenderer.PrintProgramOutput(result);
+        renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2, includeStandardOutput: false, includeStandardError: false);
+        return result.ExitCode;
+    }
+
+    private static async Task<ProcessResult> RunCompiledAsync(
+        VelaCompilation compilation,
+        string inputPath,
+        IReadOnlyList<string> programArguments)
+    {
         var temporaryDirectory = Path.Combine(Path.GetTempPath(), "vela", Guid.NewGuid().ToString("N"));
         try
         {
             var buildService = CreateBuildService();
             var generatedProject = buildService.WriteSourceProject(
                 compilation,
-                new BuildOptions(Path.GetFileNameWithoutExtension(input), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
-            var result = await VelaBuildService.RunGeneratedProjectAsync(generatedProject, options.ProgramArguments);
-            VelaConsoleRenderer.PrintProgramOutput(result);
-            renderer.PrintProcessOutput(result, raw: options.Verbosity >= 2, includeStandardOutput: false, includeStandardError: false);
-            return result.ExitCode;
+                new BuildOptions(Path.GetFileNameWithoutExtension(inputPath), temporaryDirectory, Mode: ExecutableMode.FrameworkDependent));
+            return await VelaBuildService.RunGeneratedProjectAsync(generatedProject, programArguments);
         }
         finally
         {
@@ -118,6 +314,177 @@ internal static class VelaCommandLine
             {
                 Directory.Delete(temporaryDirectory, recursive: true);
             }
+        }
+    }
+
+    private static async Task<int> TestAsync(CommandOptions options, VelaConsoleRenderer renderer)
+    {
+        var candidate = options.InputPath ?? Directory.GetCurrentDirectory();
+        var fullPath = Path.GetFullPath(candidate);
+        string[] testFiles;
+        if (File.Exists(fullPath))
+        {
+            if (!string.Equals(Path.GetExtension(fullPath), ".vela", StringComparison.OrdinalIgnoreCase))
+            {
+                return Fail(renderer, "A test input must use the .vela extension.");
+            }
+
+            testFiles = [fullPath];
+        }
+        else if (Directory.Exists(fullPath))
+        {
+            testFiles = VelaTestDiscovery.FindTestFiles(fullPath);
+        }
+        else
+        {
+            return Fail(renderer, $"Test file or directory not found: {fullPath}");
+        }
+
+        if (testFiles.Length == 0)
+        {
+            renderer.Error("VEL9000", $"No test files (*_test.vela) found in {fullPath}.");
+            return 1;
+        }
+
+        var passed = 0;
+        var failed = 0;
+        var errored = 0;
+        foreach (var testFile in testFiles)
+        {
+            renderer.Status("Testing", testFile);
+
+            VelaCompilation compilation;
+            try
+            {
+                compilation = VelaCompiler.Compile(new SourceText(File.ReadAllText(testFile), testFile));
+            }
+            catch (IOException exception)
+            {
+                renderer.Error("VEL9000", $"Unable to read '{testFile}': {exception.Message}");
+                errored++;
+                continue;
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                renderer.Error("VEL9000", $"Unable to read '{testFile}': {exception.Message}");
+                errored++;
+                continue;
+            }
+
+            renderer.PrintDiagnostics(compilation);
+            if (compilation.HasErrors)
+            {
+                renderer.Error("TEST001", $"'{testFile}' did not compile.");
+                errored++;
+                continue;
+            }
+
+            var result = await RunCompiledAsync(compilation, testFile, []);
+            if (result.ExitCode == 0)
+            {
+                renderer.Detail("PASS", testFile);
+                passed++;
+                continue;
+            }
+
+            VelaConsoleRenderer.PrintProgramOutput(result);
+            renderer.Error("TEST001", $"'{testFile}' failed with exit code {result.ExitCode}.");
+            failed++;
+        }
+
+        if (failed == 0 && errored == 0)
+        {
+            renderer.Success("Finished", $"{passed} passed");
+            return 0;
+        }
+
+        renderer.Error("TEST001", $"{passed} passed, {failed} failed, {errored} error(s).");
+        return 1;
+    }
+
+    private static async Task<int> ReplAsync(VelaConsoleRenderer renderer)
+    {
+        var session = new VelaReplSession();
+        Console.WriteLine("Vela interactive. Type :help for commands, :quit to exit.");
+        Console.WriteLine("Each submission recompiles the whole session; use print() to see values.");
+
+        string? pending = null;
+        while (true)
+        {
+            Console.Write(pending is null ? "vela> " : ".... ");
+            var line = Console.ReadLine();
+            if (line is null)
+            {
+                return 0;
+            }
+
+            if (line.StartsWith(':'))
+            {
+                if (!ReplCommand(line, session, renderer, ref pending))
+                {
+                    return 0;
+                }
+
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(line) && pending is null)
+            {
+                continue;
+            }
+
+            pending = pending is null ? line : pending + "\n" + line;
+            if (VelaReplSession.ExpectsMore(pending))
+            {
+                continue;
+            }
+
+            var chunk = pending;
+            pending = null;
+            session.Push(chunk);
+
+            var compilation = VelaCompiler.Compile(new SourceText(session.Source, "repl"));
+            renderer.PrintDiagnostics(compilation);
+            if (compilation.HasErrors)
+            {
+                session.Pop();
+                continue;
+            }
+
+            var result = await RunCompiledAsync(compilation, "repl", []);
+            VelaConsoleRenderer.PrintProgramOutput(result);
+            if (result.ExitCode != 0)
+            {
+                renderer.Error("VEL9000", $"The snippet exited with code {result.ExitCode}.");
+            }
+        }
+    }
+
+    private static bool ReplCommand(string line, VelaReplSession session, VelaConsoleRenderer renderer, ref string? pending)
+    {
+        switch (line.Trim())
+        {
+            case ":quit":
+            case ":exit":
+                return false;
+            case ":reset":
+                session.Clear();
+                pending = null;
+                Console.WriteLine("Session cleared.");
+                return true;
+            case ":show":
+                Console.WriteLine(session.Count == 0 ? "(empty)" : session.Source);
+                return true;
+            case ":help":
+                Console.WriteLine(":help          Show this help.");
+                Console.WriteLine(":show          Show the accepted session source.");
+                Console.WriteLine(":reset         Discard the session and start over.");
+                Console.WriteLine(":quit, :exit   Leave the REPL.");
+                Console.WriteLine("Any other input is compiled and run; open braces continue on the next line.");
+                return true;
+            default:
+                renderer.Error("VEL9000", $"Unknown REPL command '{Spectre.Console.Markup.Escape(line)}'. Type :help.");
+                return true;
         }
     }
 
@@ -619,6 +986,10 @@ internal static class VelaCommandLine
     {
         renderer.Title("Vela compiler");
         renderer.Detail("check", "vela check [file.vela | package-directory]");
+        renderer.Detail("fmt", "vela fmt [file.vela | package-directory] [--check] [--write]");
+        renderer.Detail("vet", "vela vet [file.vela | package-directory] [--deny-warnings]");
+        renderer.Detail("test", "vela test [file.vela | directory]");
+        renderer.Detail("repl", "vela repl");
         renderer.Detail("run", "vela run [file.vela | package-directory] [-- program arguments]");
         renderer.Detail("build", "vela build [file.vela | package-directory] [--lib] [--output directory] [--target rid]");
         renderer.Detail("targets", "vela targets");
@@ -642,6 +1013,9 @@ internal sealed record CommandOptions(
     string? ApiKey,
     string? VersionOverride,
     bool BuildLibrary,
+    bool FormatCheck,
+    bool FormatWrite,
+    bool DenyWarnings,
     bool Quiet,
     int Verbosity,
     ColorMode ColorMode,
@@ -659,6 +1033,9 @@ internal sealed record CommandOptions(
         string? apiKey = null;
         string? versionOverride = null;
         var buildLibrary = false;
+        var formatCheck = false;
+        var formatWrite = false;
+        var denyWarnings = false;
         var quiet = false;
         var verbosity = 0;
         var color = ColorMode.Auto;
@@ -670,7 +1047,7 @@ internal sealed record CommandOptions(
             var argument = arguments[index];
             if (argument is "--help" or "-h")
             {
-                return new CommandOptions("help", null, null, null, null, null, null, null, null, false, false, 0, color, []);
+                return new CommandOptions("help", null, null, null, null, null, null, null, null, false, false, false, false, false, 0, color, []);
             }
 
             if (argument == "--")
@@ -701,6 +1078,24 @@ internal sealed record CommandOptions(
             if (argument == "--lib")
             {
                 buildLibrary = true;
+                continue;
+            }
+
+            if (argument == "--check")
+            {
+                formatCheck = true;
+                continue;
+            }
+
+            if (argument == "--write")
+            {
+                formatWrite = true;
+                continue;
+            }
+
+            if (argument == "--deny-warnings")
+            {
+                denyWarnings = true;
                 continue;
             }
 
@@ -759,7 +1154,17 @@ internal sealed record CommandOptions(
             throw new ArgumentException("Options --source, --api-key, and --version are supported only by 'vela package'.");
         }
 
-        return new CommandOptions(command, subCommand, input, output, target, mode, source, apiKey, versionOverride, buildLibrary, quiet, verbosity, color, programArguments);
+        if ((formatCheck || formatWrite) && command != "fmt")
+        {
+            throw new ArgumentException("Options --check and --write are supported only by 'vela fmt'.");
+        }
+
+        if (denyWarnings && command != "vet")
+        {
+            throw new ArgumentException("Option --deny-warnings is supported only by 'vela vet'.");
+        }
+
+        return new CommandOptions(command, subCommand, input, output, target, mode, source, apiKey, versionOverride, buildLibrary, formatCheck, formatWrite, denyWarnings, quiet, verbosity, color, programArguments);
     }
 
     private static ExecutableMode ParseMode(string value) => value switch

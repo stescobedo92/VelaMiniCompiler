@@ -8,21 +8,32 @@ namespace Vela.LanguageServer;
 public sealed class VelaWorkspace
 {
     private readonly Dictionary<string, DocumentState> _documents = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, VelaDocumentIndex> _indexes = new(StringComparer.Ordinal);
 
     public void OpenDocument(string uri, string text, int version)
-        => _documents[uri] = new DocumentState(uri, text, version);
+    {
+        _documents[uri] = new DocumentState(uri, text, version);
+        RebuildIndex(uri);
+    }
 
     public void ChangeDocument(string uri, string text, int version)
     {
         if (_documents.ContainsKey(uri))
         {
             _documents[uri] = new DocumentState(uri, text, version);
+            RebuildIndex(uri);
         }
     }
 
-    public void CloseDocument(string uri) => _documents.Remove(uri);
+    public void CloseDocument(string uri)
+    {
+        _documents.Remove(uri);
+        _indexes.Remove(uri);
+    }
 
     public bool TryGetDocument(string uri, out DocumentState document) => _documents.TryGetValue(uri, out document!);
+
+    public bool TryGetIndex(string uri, out VelaDocumentIndex index) => _indexes.TryGetValue(uri, out index!);
 
     public VelaCompilation CompileDocument(string uri)
     {
@@ -33,6 +44,14 @@ public sealed class VelaWorkspace
 
         var source = new SourceText(document.Text, DocumentPath.FromUri(uri));
         return VelaCompiler.Compile(source);
+    }
+
+    private void RebuildIndex(string uri)
+    {
+        if (_documents.TryGetValue(uri, out var document))
+        {
+            _indexes[uri] = VelaDocumentIndex.Build(new SourceText(document.Text, DocumentPath.FromUri(uri)));
+        }
     }
 
     public static VelaCompilation CompileFile(string filePath)

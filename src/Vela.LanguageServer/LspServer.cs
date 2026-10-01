@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace Vela.LanguageServer;
 
 /// <summary>Minimal JSON-RPC language server over stdio with Content-Length framing.</summary>
-public sealed class LspServer
+public sealed partial class LspServer
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -67,6 +67,21 @@ public sealed class LspServer
             case "textDocument/didClose":
                 HandleDidClose(message);
                 break;
+            case "textDocument/completion":
+                await HandleCompletionAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
+            case "textDocument/hover":
+                await HandleHoverAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
+            case "textDocument/definition":
+                await HandleDefinitionAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
+            case "textDocument/documentSymbol":
+                await HandleDocumentSymbolAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
+            case "textDocument/formatting":
+                await HandleFormattingAsync(message, cancellationToken).ConfigureAwait(false);
+                break;
             case "shutdown":
                 _shutdownRequested = true;
                 await WriteResponseAsync(message["id"]!, new JsonObject(), cancellationToken).ConfigureAwait(false);
@@ -95,6 +110,11 @@ public sealed class LspServer
             ["capabilities"] = new JsonObject
             {
                 ["textDocumentSync"] = 1,
+                ["completionProvider"] = new JsonObject(),
+                ["hoverProvider"] = true,
+                ["definitionProvider"] = true,
+                ["documentSymbolProvider"] = true,
+                ["documentFormattingProvider"] = true,
             },
             ["serverInfo"] = new JsonObject
             {
