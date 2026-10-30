@@ -210,8 +210,17 @@ public sealed class RegistrySecurityTests
         await WaitUntilAsync(() => Directory.Exists(uploads) && Directory.GetDirectories(uploads).Length == 1);
         connection.Client.Shutdown(SocketShutdown.Send);
         using var reader = new StreamReader(stream);
-        var reply = await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(reply.Length == 0 || reply.Contains("400 Bad Request", StringComparison.Ordinal));
+        try
+        {
+            var reply = await reader.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(reply.Length == 0 || reply.Contains("400 Bad Request", StringComparison.Ordinal));
+        }
+        catch (IOException exception) when (exception.InnerException is SocketException { SocketErrorCode: SocketError.ConnectionReset })
+        {
+            // Kestrel can reset a truncated request instead of sending a reply,
+            // including on macOS. Cleanup and non-publication remain required.
+        }
+
         await WaitUntilAsync(() => Directory.GetDirectories(uploads).Length == 0);
         Assert.False(Directory.Exists(Path.Combine(registry.Root, "acme.demo")));
         Assert.Empty(Directory.GetDirectories(Path.Combine(registry.Root, ".uploads")));
