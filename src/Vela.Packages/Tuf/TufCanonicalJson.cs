@@ -99,58 +99,34 @@ internal static class TufCanonicalJson
 
     private static void WriteString(Stream stream, string value)
     {
-        stream.WriteByte((byte)'"');
+        var escaped = new StringBuilder(value.Length + 2);
+        escaped.Append('"');
         foreach (var ch in value)
         {
             switch (ch)
             {
-                case '"':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'"');
-                    break;
-                case '\\':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'\\');
-                    break;
-                case '\b':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'b');
-                    break;
-                case '\f':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'f');
-                    break;
-                case '\n':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'n');
-                    break;
-                case '\r':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'r');
-                    break;
-                case '\t':
-                    stream.WriteByte((byte)'\\');
-                    stream.WriteByte((byte)'t');
-                    break;
+                case '"': escaped.Append("\\\""); break;
+                case '\\': escaped.Append("\\\\"); break;
+                case '\b': escaped.Append("\\b"); break;
+                case '\f': escaped.Append("\\f"); break;
+                case '\n': escaped.Append("\\n"); break;
+                case '\r': escaped.Append("\\r"); break;
+                case '\t': escaped.Append("\\t"); break;
                 default:
                     if (ch < 0x20)
                     {
-                        stream.WriteByte((byte)'\\');
-                        stream.WriteByte((byte)'u');
-                        stream.Write(Encoding.UTF8.GetBytes(((int)ch).ToString("x4", CultureInfo.InvariantCulture)));
+                        escaped.Append("\\u").Append(((int)ch).ToString("x4", CultureInfo.InvariantCulture));
                     }
                     else
                     {
-                        stream.WriteByte((byte)ch);
+                        escaped.Append(ch);
                     }
-
                     break;
             }
         }
-
-        stream.WriteByte((byte)'"');
+        escaped.Append('"');
+        stream.Write(Encoding.UTF8.GetBytes(escaped.ToString()));
     }
-
     private static void WriteNumber(Stream stream, JsonElement element)
     {
         if (element.TryGetInt64(out var integer))

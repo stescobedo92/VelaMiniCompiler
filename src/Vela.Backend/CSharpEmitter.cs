@@ -712,10 +712,29 @@ internal sealed partial class CSharpEmitter
         if (operation is TokenKind.EqualsEquals or TokenKind.BangEquals)
         {
             EnsureComparable(left.Type, right.Type, binary.Span);
+            var optional = left.Type.IsOptional && right.Type.IsSameAs(VelaType.Nil) ? left
+                : right.Type.IsOptional && left.Type.IsSameAs(VelaType.Nil) ? right
+                : null;
+            if (optional is not null)
+            {
+                var property = operation == TokenKind.EqualsEquals ? "IsNone" : "HasValue";
+                return new ExpressionResult(VelaType.Bool, $"({optional.Code}).{property}");
+            }
+
             if (left.Type.IsNumeric && right.Type.IsNumeric)
             {
                 var comparisonType = GetNumericResultType(left.Type, right.Type, binary.Span);
                 return new ExpressionResult(VelaType.Bool, $"{CoerceNumeric(comparisonType, left, binary.Left)} {binary.OperatorToken.Text} {CoerceNumeric(comparisonType, right, binary.Right)}");
+            }
+
+            if (left.Type.IsSameAs(right.Type) && !left.Type.IsSameAs(VelaType.Nil)
+                && !left.Type.IsSameAs(VelaType.Text) && !left.Type.IsSameAs(VelaType.Bool)
+                && !left.Type.IsSameAs(VelaType.Any))
+            {
+                // Structs, options, results and generic parameters need value
+                // equality even when their CLR types do not overload ==.
+                var comparison = $"global::System.Collections.Generic.EqualityComparer<{CSharpType(left.Type)}>.Default.Equals({left.Code}, {right.Code})";
+                return new ExpressionResult(VelaType.Bool, operation == TokenKind.EqualsEquals ? comparison : $"!{comparison}");
             }
 
             return new ExpressionResult(VelaType.Bool, $"{left.Code} {binary.OperatorToken.Text} {right.Code}");
@@ -1842,7 +1861,9 @@ internal sealed partial class CSharpEmitter
 
     private void EnsureComparable(VelaType left, VelaType right, TextSpan span)
     {
-        if (left.IsUnknown || right.IsUnknown || left.IsSameAs(right) || (left.IsNumeric && right.IsNumeric) || left.IsSameAs(VelaType.Nil) || right.IsSameAs(VelaType.Nil))
+        if (left.IsUnknown || right.IsUnknown || left.IsSameAs(right) || (left.IsNumeric && right.IsNumeric)
+            || (left.IsSameAs(VelaType.Nil) && (right.IsOptional || right.IsSameAs(VelaType.Any)))
+            || (right.IsSameAs(VelaType.Nil) && (left.IsOptional || left.IsSameAs(VelaType.Any))))
         {
             return;
         }

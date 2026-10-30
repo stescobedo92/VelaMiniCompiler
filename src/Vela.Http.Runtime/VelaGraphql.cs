@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
-using System.Text;
-using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace Vela.Http;
 
 /// <summary>Minimal GraphQL schema: named query fields returning JSON text fragments.</summary>
-public sealed partial class VelaGraphqlSchema
+public sealed class VelaGraphqlSchema
 {
     private readonly ConcurrentDictionary<string, Func<string, string>> _queries = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Func<string, string>> _mutations = new(StringComparer.Ordinal);
@@ -47,114 +47,211 @@ public sealed partial class VelaGraphqlSchema
         document = document.Trim();
         if (document.Length == 0)
         {
-            return "{\"errors\":[{\"message\":\"empty query\"}]}";
+            return Error("empty query");
         }
 
-        var isMutation = document.StartsWith("mutation", StringComparison.OrdinalIgnoreCase);
-        var map = isMutation ? _mutations : _queries;
-        var match = FieldRegex().Match(document);
-        if (!match.Success)
+        var parser = new DocumentParser(document);
+        if (!parser.TryParse(out var isMutation, out var field, out var arguments))
         {
-            return "{\"errors\":[{\"message\":\"unsupported GraphQL document\"}]}";
+            return Error("unsupported GraphQL document");
         }
 
-        var field = match.Groups["name"].Value;
-        var argsText = match.Groups["args"].Success ? match.Groups["args"].Value : string.Empty;
-        var argsJson = ArgsToJson(argsText);
+        var map = isMutation ? _mutations : _queries;
         if (!map.TryGetValue(field, out var handler))
         {
-            return $"{{\"errors\":[{{\"message\":\"unknown field '{field}'\"}}]}}";
+            return Error($"unknown field '{field}'");
         }
 
+        string value;
         try
         {
-            var value = handler(argsJson);
-            return $"{{\"data\":{{\"{Escape(field)}\":{EnsureJsonValue(value)}}}}}";
+            value = handler(arguments.ToJsonString());
         }
         catch (Exception ex)
         {
-            return $"{{\"errors\":[{{\"message\":{Quote(ex.Message)}}}]}}";
+            return Error(ex.Message);
         }
+
+        return new JsonObject
+        {
+            ["data"] = new JsonObject { [field] = EnsureJsonValue(value) },
+        }.ToJsonString();
     }
 
-    private static string ArgsToJson(string argsText)
-    {
-        if (string.IsNullOrWhiteSpace(argsText))
+    private static string Error(string message)
+        => new JsonObject
         {
-            return "{}";
+            ["errors"] = new JsonArray(new JsonObject { ["message"] = message }),
+        }.ToJsonString();
+
+    private static JsonNode? EnsureJsonValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
         }
 
-        // text: "hello", n: 1, flag: true  -> {"text":"hello","n":1,"flag":true}
-        var parts = argsText.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        var sb = new StringBuilder();
-        sb.Append('{');
-        var first = true;
-        foreach (var part in parts)
-        {
-            var colon = part.IndexOf(':');
-            if (colon <= 0)
-            {
-                continue;
-            }
-
-            var key = part[..colon].Trim();
-            var value = part[(colon + 1)..].Trim();
-            if (!first)
-            {
-                sb.Append(',');
-            }
-
-            first = false;
-            sb.Append(Quote(key));
-            sb.Append(':');
-            sb.Append(value);
-        }
-
-        sb.Append('}');
-        return sb.ToString();
-    }
-
-    private static string EnsureJsonValue(string value)
-    {
         var trimmed = value.Trim();
-        if (trimmed.Length == 0)
+        try
         {
-            return "null";
+            return JsonNode.Parse(trimmed);
         }
-
-        if (trimmed[0] is '"' or '{' or '[' or 't' or 'f' or 'n' || char.IsDigit(trimmed[0]) || trimmed[0] == '-')
+        catch (JsonException)
         {
-            return trimmed;
+            return JsonValue.Create(trimmed);
         }
-
-        return Quote(trimmed);
     }
 
-    private static string Quote(string value)
+    // One anonymous query/mutation, one field, and named scalar arguments. Consume
+    // the entire document before invoking a resolver so unsupported syntax cannot
+    // accidentally execute a valid-looking substring (especially a mutation).
+    private sealed class DocumentParser(string document)
     {
-        var sb = new StringBuilder(value.Length + 2);
-        sb.Append('"');
-        foreach (var ch in value)
+        private int _position;
+
+        public bool TryParse(out bool isMutation, out string field, out JsonObject arguments)
         {
-            sb.Append(ch switch
+            isMutation = false;
+            field = string.Empty;
+            arguments = new JsonObject();
+            SkipIgnored();
+            if (!Consume('{'))
             {
-                '\\' => "\\\\",
-                '"' => "\\\"",
-                '\n' => "\\n",
-                '\r' => "\\r",
-                '\t' => "\\t",
-                _ => ch.ToString()
-            });
+                var operation = ReadName();
+                if (operation is not ("query" or "mutation"))
+                {
+                    return false;
+                }
+
+                isMutation = operation == "mutation";
+                if (!Consume('{'))
+                {
+                    return false;
+                }
+            }
+
+            field = ReadName();
+            if (field.Length == 0)
+            {
+                return false;
+            }
+
+            if (Consume('('))
+            {
+                do
+                {
+                    var name = ReadName();
+                    if (name.Length == 0 || arguments.ContainsKey(name) || !Consume(':')
+                        || !TryReadScalar(out var value))
+                    {
+                        return false;
+                    }
+
+                    arguments.Add(name, value);
+                }
+                while (!Consume(')'));
+            }
+
+            return Consume('}') && _position == document.Length;
         }
 
-        sb.Append('"');
-        return sb.ToString();
+        private bool TryReadScalar(out JsonNode? value)
+        {
+            value = null;
+            SkipIgnored();
+            var start = _position;
+            if (_position < document.Length && document[_position] == '"')
+            {
+                _position++;
+                var closed = false;
+                while (_position < document.Length)
+                {
+                    var current = document[_position++];
+                    if (current == '\\' && _position < document.Length)
+                    {
+                        _position++;
+                    }
+                    else if (current == '"')
+                    {
+                        closed = true;
+                        break;
+                    }
+                }
+
+                if (!closed)
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                while (_position < document.Length
+                    && !IsIgnored(document[_position]) && document[_position] != ')')
+                {
+                    _position++;
+                }
+            }
+
+            try
+            {
+                value = JsonNode.Parse(document[start.._position]);
+                if (value is JsonValue scalar && scalar.GetValueKind() == JsonValueKind.String)
+                {
+                    // Decode now: JsonNode otherwise defers invalid Unicode
+                    // escapes until the resolver tries to read its arguments.
+                    value = JsonValue.Create(scalar.GetValue<string>());
+                }
+
+                return value is null or JsonValue;
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private string ReadName()
+        {
+            SkipIgnored();
+            var start = _position;
+            if (_position < document.Length && IsNameStart(document[_position]))
+            {
+                _position++;
+                while (_position < document.Length
+                    && (IsNameStart(document[_position]) || char.IsAsciiDigit(document[_position])))
+                {
+                    _position++;
+                }
+            }
+
+            return document[start.._position];
+        }
+
+        private bool Consume(char expected)
+        {
+            SkipIgnored();
+            if (_position >= document.Length || document[_position] != expected)
+            {
+                return false;
+            }
+
+            _position++;
+            SkipIgnored();
+            return true;
+        }
+
+        private void SkipIgnored()
+        {
+            while (_position < document.Length && IsIgnored(document[_position]))
+            {
+                _position++;
+            }
+        }
+
+        private static bool IsNameStart(char value) => char.IsAsciiLetter(value) || value == '_';
+
+        private static bool IsIgnored(char value) => value is ' ' or '\t' or '\r' or '\n' or ',';
     }
-
-    private static string Escape(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal);
-
-    [GeneratedRegex("""(?:query|mutation)?\s*\{\s*(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\((?<args>[^)]*)\))?\s*\}""", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
-    private static partial Regex FieldRegex();
 }
 
 /// <summary>Static helpers emitted by the Vela GraphQL core module.</summary>

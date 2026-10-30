@@ -65,6 +65,10 @@ public sealed partial class SemVer : IComparable<SemVer>, IEquatable<SemVer>
         {
             return false;
         }
+        catch (OverflowException)
+        {
+            return false;
+        }
     }
 
     /// <summary>Returns whether <paramref name="version"/> satisfies <paramref name="range"/>.</summary>

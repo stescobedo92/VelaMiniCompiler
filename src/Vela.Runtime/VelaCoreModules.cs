@@ -58,6 +58,7 @@ public static class VelaJson
         using var document = Parse(value, sourceLocation);
         return document.RootElement.ValueKind == JsonValueKind.Object
             && document.RootElement.TryGetProperty(property, out var element)
+            && element.ValueKind == JsonValueKind.Number
             && element.TryGetInt32(out var number)
             ? Option.Some(number)
             : Option.None<int>();

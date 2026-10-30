@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,6 +8,9 @@ namespace Vela.LanguageServer;
 /// <summary>Minimal JSON-RPC language server over stdio with Content-Length framing.</summary>
 public sealed partial class LspServer
 {
+    private const int MaximumContentLength = 16 * 1024 * 1024;
+    private const int MaximumHeaderLength = 8 * 1024;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -16,6 +20,7 @@ public sealed partial class LspServer
     private readonly VelaWorkspace _workspace = new();
     private readonly Stream _input;
     private readonly Stream _output;
+    private readonly byte[] _headerByte = new byte[1];
     private bool _shutdownRequested;
 
     public LspServer(Stream input, Stream output)
@@ -28,24 +33,110 @@ public sealed partial class LspServer
     {
         while (!cancellationToken.IsCancellationRequested && !_shutdownRequested)
         {
-            var message = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
-            if (message is null)
+            byte[]? payload;
+            try
+            {
+                payload = await ReadMessageAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException)
+            {
+                // An invalid frame cannot be safely resynchronized. Report it and
+                // close this session without allocating an untrusted body length.
+                await WriteErrorResponseAsync(null, -32700, "Invalid message framing", cancellationToken).ConfigureAwait(false);
+                break;
+            }
+
+            if (payload is null)
             {
                 break;
             }
 
-            await HandleMessageAsync(message, cancellationToken).ConfigureAwait(false);
+            JsonNode? message;
+            try
+            {
+                message = JsonNode.Parse(payload, documentOptions: new JsonDocumentOptions { AllowDuplicateProperties = false });
+                ValidateJsonStrings(message);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                await WriteErrorResponseAsync(null, -32700, "Parse error", cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            if (message is JsonObject request)
+            {
+                await HandleMessageAsync(request, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await WriteErrorResponseAsync(null, -32600, "Invalid Request", cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static void ValidateJsonStrings(JsonNode? node)
+    {
+        // JsonNode decodes property names and string values lazily. Force that
+        // decoding inside the parse-error boundary, before any request handlers,
+        // so invalid UTF-8 or unpaired Unicode escapes cannot fail during dispatch.
+        switch (node)
+        {
+            case JsonObject value:
+                foreach (var property in value)
+                {
+                    ValidateJsonStrings(property.Value);
+                }
+
+                break;
+            case JsonArray value:
+                foreach (var item in value)
+                {
+                    ValidateJsonStrings(item);
+                }
+
+                break;
+            case JsonValue value when value.GetValueKind() == JsonValueKind.String:
+                _ = value.GetValue<string>();
+                break;
         }
     }
 
     internal async Task HandleMessageAsync(JsonObject message, CancellationToken cancellationToken)
     {
-        var method = message["method"]?.GetValue<string>();
-        if (method is null)
+        var id = message["id"];
+        var hasId = message.ContainsKey("id");
+        var validId = id is JsonValue idValue
+            && (idValue.TryGetValue<string>(out _) || idValue.TryGetValue<int>(out _));
+        if (!TryGetString(message["jsonrpc"], out var version) || version != "2.0"
+            || !TryGetString(message["method"], out var method)
+            || (hasId && !validId))
         {
-            if (message["id"] is JsonValue idValue)
+            await WriteErrorResponseAsync(validId ? id : null, -32600, "Invalid Request", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        var requiresId = method is "initialize" or "shutdown" or "textDocument/completion"
+            or "textDocument/hover" or "textDocument/definition" or "textDocument/documentSymbol"
+            or "textDocument/formatting";
+        if (requiresId && !hasId)
+        {
+            // JSON-RPC notifications never receive responses. Do not run a
+            // request-only operation such as shutdown when its ID is missing.
+            return;
+        }
+
+        if (hasId && method is "initialized" or "exit" or "textDocument/didOpen"
+            or "textDocument/didChange" or "textDocument/didClose")
+        {
+            await WriteErrorResponseAsync(id, -32600, "Invalid Request", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!HasValidParameters(method, message["params"]))
+        {
+            if (hasId)
             {
-                await WriteResponseAsync(idValue, new JsonObject(), cancellationToken).ConfigureAwait(false);
+                await WriteErrorResponseAsync(id, -32602, "Invalid params", cancellationToken).ConfigureAwait(false);
             }
 
             return;
@@ -84,10 +175,10 @@ public sealed partial class LspServer
                 break;
             case "shutdown":
                 _shutdownRequested = true;
-                await WriteResponseAsync(message["id"]!, new JsonObject(), cancellationToken).ConfigureAwait(false);
+                await WriteResponseAsync(message["id"]!, null, cancellationToken).ConfigureAwait(false);
                 break;
             case "exit":
-                Environment.Exit(0);
+                _shutdownRequested = true;
                 break;
             default:
                 if (message["id"] is JsonValue unknownId)
@@ -102,6 +193,58 @@ public sealed partial class LspServer
                 break;
         }
     }
+
+    private static bool HasValidParameters(string method, JsonNode? parameters)
+    {
+        if (parameters is not null and not JsonObject)
+        {
+            return false;
+        }
+
+        if (method is not ("textDocument/didOpen" or "textDocument/didChange" or "textDocument/didClose"
+                or "textDocument/completion" or "textDocument/hover" or "textDocument/definition"
+                or "textDocument/documentSymbol" or "textDocument/formatting"))
+        {
+            return true;
+        }
+
+        if (parameters is not JsonObject values || values["textDocument"] is not JsonObject document
+            || !TryGetString(document["uri"], out _)
+            || (document.ContainsKey("version") && !IsInteger(document["version"])))
+        {
+            return false;
+        }
+
+        if (method == "textDocument/didOpen")
+        {
+            return TryGetString(document["text"], out _);
+        }
+
+        if (method == "textDocument/didChange")
+        {
+            return values["contentChanges"] is JsonArray { Count: > 0 } changes
+                && changes.All(static change => change is JsonObject entry
+                    && !entry.ContainsKey("range") && TryGetString(entry["text"], out _));
+        }
+
+        if (method is "textDocument/hover" or "textDocument/definition" || values.ContainsKey("position"))
+        {
+            return values["position"] is JsonObject position
+                && IsInteger(position["line"], nonnegative: true)
+                && IsInteger(position["character"], nonnegative: true);
+        }
+
+        return true;
+    }
+
+    private static bool TryGetString(JsonNode? node, out string value)
+    {
+        value = string.Empty;
+        return node is JsonValue jsonValue && jsonValue.TryGetValue(out value!);
+    }
+
+    private static bool IsInteger(JsonNode? node, bool nonnegative = false)
+        => node is JsonValue value && value.TryGetValue<int>(out var number) && (!nonnegative || number >= 0);
 
     private async Task HandleInitializeAsync(JsonObject message, CancellationToken cancellationToken)
     {
@@ -152,13 +295,13 @@ public sealed partial class LspServer
         var textDocument = parameters?["textDocument"]?.AsObject();
         var uri = textDocument?["uri"]?.GetValue<string>();
         var version = textDocument?["version"]?.GetValue<int>() ?? 1;
-        if (uri is null)
+        if (uri is null || !_workspace.TryGetDocument(uri, out _))
         {
             return;
         }
 
         var contentChanges = parameters?["contentChanges"]?.AsArray();
-        var text = contentChanges?.FirstOrDefault()?["text"]?.GetValue<string>();
+        var text = contentChanges?.LastOrDefault()?["text"]?.GetValue<string>();
         if (text is null)
         {
             return;
@@ -224,24 +367,24 @@ public sealed partial class LspServer
             },
         };
 
-    private async Task WriteResponseAsync(JsonNode id, JsonNode result, CancellationToken cancellationToken)
+    private async Task WriteResponseAsync(JsonNode id, JsonNode? result, CancellationToken cancellationToken)
     {
         var response = new JsonObject
         {
             ["jsonrpc"] = "2.0",
             ["id"] = id.DeepClone(),
-            ["result"] = result.DeepClone(),
+            ["result"] = result?.DeepClone(),
         };
 
         await WriteMessageAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task WriteErrorResponseAsync(JsonNode id, int code, string message, CancellationToken cancellationToken)
+    private async Task WriteErrorResponseAsync(JsonNode? id, int code, string message, CancellationToken cancellationToken)
     {
         var response = new JsonObject
         {
             ["jsonrpc"] = "2.0",
-            ["id"] = id.DeepClone(),
+            ["id"] = id?.DeepClone(),
             ["error"] = new JsonObject
             {
                 ["code"] = code,
@@ -264,7 +407,7 @@ public sealed partial class LspServer
         await _output.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<JsonObject?> ReadMessageAsync(CancellationToken cancellationToken)
+    private async Task<byte[]?> ReadMessageAsync(CancellationToken cancellationToken)
     {
         var contentLength = await ReadContentLengthAsync(cancellationToken).ConfigureAwait(false);
         if (contentLength is null)
@@ -273,43 +416,49 @@ public sealed partial class LspServer
         }
 
         var buffer = new byte[contentLength.Value];
-        var read = 0;
-        while (read < buffer.Length)
-        {
-            var chunk = await _input.ReadAsync(buffer.AsMemory(read, buffer.Length - read), cancellationToken)
-                .ConfigureAwait(false);
-            if (chunk == 0)
-            {
-                return null;
-            }
-
-            read += chunk;
-        }
-
-        return JsonNode.Parse(Encoding.UTF8.GetString(buffer))?.AsObject();
+        await _input.ReadExactlyAsync(buffer, cancellationToken).ConfigureAwait(false);
+        return buffer;
     }
 
     private async Task<int?> ReadContentLengthAsync(CancellationToken cancellationToken)
     {
         int? contentLength = null;
+        var headerLength = 0;
 
         while (true)
         {
             var line = await ReadHeaderLineAsync(cancellationToken).ConfigureAwait(false);
             if (line is null)
             {
-                return contentLength;
+                return headerLength == 0 ? null : throw new EndOfStreamException();
+            }
+
+            headerLength += line.Length + 2;
+            if (headerLength > MaximumHeaderLength)
+            {
+                throw new InvalidDataException("Message headers exceed the supported limit.");
             }
 
             if (line.Length == 0)
             {
-                return contentLength;
+                return contentLength ?? throw new InvalidDataException("Content-Length is required.");
             }
 
-            const string prefix = "Content-Length: ";
-            if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
-                && int.TryParse(line[prefix.Length..], out var length))
+            var colon = line.IndexOf(':');
+            if (colon <= 0)
             {
+                throw new InvalidDataException("Invalid message header.");
+            }
+
+            if (line[..colon].Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+            {
+                if (contentLength is not null
+                    || !int.TryParse(line.AsSpan(colon + 1).Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var length)
+                    || length > MaximumContentLength)
+                {
+                    throw new InvalidDataException("Invalid Content-Length.");
+                }
+
                 contentLength = length;
             }
         }
@@ -320,31 +469,33 @@ public sealed partial class LspServer
         var builder = new StringBuilder();
         while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var next = _input.ReadByte();
-            if (next == -1)
+            if (await _input.ReadAsync(_headerByte, cancellationToken).ConfigureAwait(false) == 0)
             {
-                return builder.Length == 0 ? null : builder.ToString();
+                return builder.Length == 0 ? null : throw new EndOfStreamException();
             }
 
+            var next = _headerByte[0];
             if (next == '\r')
             {
-                var following = _input.ReadByte();
-                if (following == '\n')
+                if (await _input.ReadAsync(_headerByte, cancellationToken).ConfigureAwait(false) == 0)
                 {
-                    return builder.ToString();
+                    throw new EndOfStreamException();
                 }
 
-                builder.Append('\r');
-                if (following != -1)
+                if (_headerByte[0] != '\n')
                 {
-                    builder.Append((char)following);
+                    throw new InvalidDataException("Message headers must use CRLF line endings.");
                 }
+
+                return builder.ToString();
             }
-            else
+
+            if (next > 127 || next == '\n' || builder.Length >= MaximumHeaderLength)
             {
-                builder.Append((char)next);
+                throw new InvalidDataException("Invalid or oversized message header.");
             }
+
+            builder.Append((char)next);
         }
     }
 }

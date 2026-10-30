@@ -251,9 +251,13 @@ library export.
 
 ## Nullability, arrays, and boxing
 
-`T?` is Vela's explicit optional value representation. `null` is legal only for
-an optional target. Reading `.value` when no value exists throws a
+`T?` is Vela's explicit optional value representation. `null` is legal for
+an optional target or an `Any` binding. Reading `.value` when no value exists throws a
 `VelaNullReferenceException`.
+
+Comparing an optional with `null` or `nil` tests whether it is empty. Equality
+between two options, results, or structs compares their values. `Any` retains
+object identity equality; unbox it to compare the contained typed values.
 
 ```vela
 let boxed: Any = 42;
@@ -267,7 +271,11 @@ print(values[0]);
 
 Assignments to `Any` box value types. `unbox<T>` validates the exact Vela type
 and fails with `VelaInvalidCastException`; `try_unbox<T>` returns `T?` instead.
-All array access is bounds-checked.
+All array access is bounds-checked. Array slots containing references, or structs
+with reference fields, must be assigned before they are read or enumerated;
+otherwise they raise `VelaNullReferenceException`. Numeric slots retain their
+zero defaults, optional slots start as `None`, and `Any` slots can contain `null`;
+unboxing `Any` still validates the requested type.
 
 ## Packages, source libraries, and native libraries
 

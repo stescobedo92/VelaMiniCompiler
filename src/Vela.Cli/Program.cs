@@ -665,13 +665,19 @@ internal static class VelaCommandLine
     {
         if (options.InputPath is null)
         {
-            return Fail(renderer, "Usage: vela package restore <name> --version <range> [--source url]");
+            return Fail(renderer, "Usage: vela package restore <name> --version <range> [--source url] [--trusted-root root.json | --allow-unsigned]");
         }
 
         var version = options.VersionOverride ?? "*";
-        var source = options.Source ?? "file://" + Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "registry"));
+        var source = options.Source ?? new Uri(Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "registry"))).AbsoluteUri;
         renderer.Status("Restoring", $"{options.InputPath}@{version} from {source}");
-        using var client = new Vela.Packages.VelaRestoreClient();
+        using var client = new Vela.Packages.VelaRestoreClient(
+            new Vela.Packages.VelaPackageCache(),
+            options: new Vela.Packages.VelaRestoreOptions
+            {
+                TrustedRootPath = options.TrustedRootPath,
+                AllowUnsigned = options.AllowUnsigned
+            });
         try
         {
             var restored = await client.RestoreAsync(options.InputPath, version, source);
@@ -997,6 +1003,7 @@ internal static class VelaCommandLine
         renderer.Detail(string.Empty, "vela package login [--source url] [--api-key key]");
         renderer.Detail(string.Empty, "vela package push <archive.vpkg> [--source url] [--api-key key]");
         renderer.Detail(string.Empty, "vela package logout [--source url]");
+        renderer.Detail(string.Empty, "vela package restore <name> [--version range] [--source url] [--trusted-root root.json | --allow-unsigned]");
         renderer.Detail("output", "Detailed and colored by default; use -q or --quiet to reduce output.");
         renderer.Detail("color", "--color auto|always|never; use -vv to include raw .NET publishing output.");
     }
@@ -1012,6 +1019,8 @@ internal sealed record CommandOptions(
     string? Source,
     string? ApiKey,
     string? VersionOverride,
+    string? TrustedRootPath,
+    bool AllowUnsigned,
     bool BuildLibrary,
     bool FormatCheck,
     bool FormatWrite,
@@ -1032,6 +1041,8 @@ internal sealed record CommandOptions(
         string? source = null;
         string? apiKey = null;
         string? versionOverride = null;
+        string? trustedRootPath = null;
+        var allowUnsigned = false;
         var buildLibrary = false;
         var formatCheck = false;
         var formatWrite = false;
@@ -1047,7 +1058,7 @@ internal sealed record CommandOptions(
             var argument = arguments[index];
             if (argument is "--help" or "-h")
             {
-                return new CommandOptions("help", null, null, null, null, null, null, null, null, false, false, false, false, false, 0, color, []);
+                return new CommandOptions("help", null, null, null, null, null, null, null, null, null, false, false, false, false, false, false, 0, color, []);
             }
 
             if (argument == "--")
@@ -1099,9 +1110,16 @@ internal sealed record CommandOptions(
                 continue;
             }
 
-            if (argument is "--output" or "--target" or "--mode" or "--color" or "--source" or "--api-key" or "--version")
+            if (argument == "--allow-unsigned")
             {
-                if (index + 1 >= arguments.Length)
+                allowUnsigned = true;
+                continue;
+            }
+
+            if (argument is "--output" or "--target" or "--mode" or "--color" or "--source" or "--api-key" or "--version" or "--trusted-root")
+            {
+                if (index + 1 >= arguments.Length
+                    || (argument == "--trusted-root" && arguments[index + 1].StartsWith("--", StringComparison.Ordinal)))
                 {
                     throw new ArgumentException($"Option '{argument}' requires a value.");
                 }
@@ -1116,6 +1134,7 @@ internal sealed record CommandOptions(
                     case "--source": source = value; break;
                     case "--api-key": apiKey = value; break;
                     case "--version": versionOverride = value; break;
+                    case "--trusted-root": trustedRootPath = Path.GetFullPath(value); break;
                 }
 
                 continue;
@@ -1159,12 +1178,22 @@ internal sealed record CommandOptions(
             throw new ArgumentException("Options --check and --write are supported only by 'vela fmt'.");
         }
 
+        if ((trustedRootPath is not null || allowUnsigned) && (command != "package" || subCommand != "restore"))
+        {
+            throw new ArgumentException("Options --trusted-root and --allow-unsigned are supported only by 'vela package restore'.");
+        }
+
+        if (trustedRootPath is not null && allowUnsigned)
+        {
+            throw new ArgumentException("Options --trusted-root and --allow-unsigned are mutually exclusive.");
+        }
+
         if (denyWarnings && command != "vet")
         {
             throw new ArgumentException("Option --deny-warnings is supported only by 'vela vet'.");
         }
 
-        return new CommandOptions(command, subCommand, input, output, target, mode, source, apiKey, versionOverride, buildLibrary, formatCheck, formatWrite, denyWarnings, quiet, verbosity, color, programArguments);
+        return new CommandOptions(command, subCommand, input, output, target, mode, source, apiKey, versionOverride, trustedRootPath, allowUnsigned, buildLibrary, formatCheck, formatWrite, denyWarnings, quiet, verbosity, color, programArguments);
     }
 
     private static ExecutableMode ParseMode(string value) => value switch

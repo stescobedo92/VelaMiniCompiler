@@ -14,13 +14,14 @@ vela package pack [package-directory] [--version semver] [--output dir]
 vela package login [--source url] [--api-key key]
 vela package push <archive.vpkg> [--source url] [--api-key key]
 vela package logout [--source url]
+vela package restore <name> [--version range] [--source url] [--trusted-root root.json | --allow-unsigned]
 ```
 
 Common flags: `--color auto|always|never`, verbosity / `--quiet`.
 
 `build` defaults to Native AOT. GUI/HTTP/gRPC programs force
 framework-dependent publish when AOT is requested, because those adapters are
-not AOT-trimmed in 0.3.0.
+not AOT-trimmed in 0.4.0.
 
 ## Package publishing
 
@@ -44,3 +45,23 @@ not AOT-trimmed in 0.3.0.
 - **logout** removes the stored credential for a source.
 
 The default source is `https://packages.vela.dev/v3/index.json`.
+
+## Package restore and trust
+
+`restore` uses the file/HTTP `.vlpkg` registry protocol, which is separate from
+the gallery `.vpkg` publishing protocol above. The default restore source is
+the local `registry` directory.
+
+```sh
+vela package restore example.lib --version '^1.0.0' --source https://registry.example/ --trusted-root ./trusted-root.json
+```
+
+Obtain `trusted-root.json` through an independently authenticated channel.
+The client persists trust per registry, verifies signed root rotations and
+rejects metadata rollback. Subsequent restores can omit `--trusted-root`.
+Removing the cache also removes this persisted trust and rollback history;
+provision a current trusted root again before using a fresh cache.
+
+For a development registry without signed metadata, explicitly use
+`--allow-unsigned`. That flag cannot downgrade a registry already marked as
+trusted. It cannot be combined with `--trusted-root`.

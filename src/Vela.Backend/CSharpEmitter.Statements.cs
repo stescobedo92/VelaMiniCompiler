@@ -305,7 +305,10 @@ internal sealed partial class CSharpEmitter
 
             var catchScope = new Scope(scope);
             AddVariable(catchScope, catchClause.Identifier.Text, new VariableSymbol(exceptionType, false), catchClause.Identifier.Span);
+            // Vela permits a handler to ignore its exception binding.
+            _writer.WriteLine("#pragma warning disable CS0168");
             _writer.WriteLine($"catch ({CSharpType(exceptionType)} {EscapeIdentifier(catchClause.Identifier.Text)})");
+            _writer.WriteLine("#pragma warning restore CS0168");
             _writer.WriteLine("{");
             _writer.Indent();
             catchReturns.Add(EmitBlock(catchClause.Block, catchScope, returnType, isTail));

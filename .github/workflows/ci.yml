@@ -52,6 +52,14 @@ jobs:
       - name: Test runtime and core modules
         run: dotnet test tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=runtime.trx"
 
+      - name: Test CLI trust options and registry publication
+        shell: pwsh
+        run: |
+          dotnet test tests/Vela.Cli.Tests/Vela.Cli.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=cli.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test tests/Vela.Registry.Server.Tests/Vela.Registry.Server.Tests.csproj --configuration Release --no-build --no-restore --logger "trx;LogFileName=registry.trx"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Test UI / HTTP / gRPC adapters
         shell: pwsh
         run: |

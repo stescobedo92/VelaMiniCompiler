@@ -36,18 +36,19 @@ public sealed class CheckFileCommandTests
 
     private static async Task<string> RunLanguageServerAsync(params string[] arguments)
     {
-        var projectPath = Path.GetFullPath(Path.Combine(FindRepositoryRoot(), "src", "Vela.LanguageServer", "Vela.LanguageServer.csproj"));
+        // The project reference stages the executable with its runtime files.
+        // Running it directly exercises this build without launching an SDK
+        // restore/build or an unrelated dotnet shim from the user's PATH.
+        var executablePath = Path.Combine(AppContext.BaseDirectory, OperatingSystem.IsWindows() ? "vela-lsp.exe" : "vela-lsp");
+        Assert.True(File.Exists(executablePath), $"Missing built language server: {executablePath}");
+        Assert.True(File.Exists(Path.Combine(AppContext.BaseDirectory, "vela-lsp.runtimeconfig.json")));
         var startInfo = new ProcessStartInfo
         {
-            FileName = "dotnet",
+            FileName = executablePath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        startInfo.ArgumentList.Add("run");
-        startInfo.ArgumentList.Add("--project");
-        startInfo.ArgumentList.Add(projectPath);
-        startInfo.ArgumentList.Add("--");
         foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
@@ -55,9 +56,31 @@ public sealed class CheckFileCommandTests
 
         using var process = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Failed to start vela-lsp process.");
-        var stdout = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
-        var stderr = await process.StandardError.ReadToEndAsync().ConfigureAwait(false);
-        await process.WaitForExitAsync().ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
+        try
+        {
+            await Task.WhenAll(stdoutTask, stderrTask, process.WaitForExitAsync(timeout.Token)).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch (InvalidOperationException) when (process.HasExited)
+            {
+                // The process can exit between the timeout and termination.
+            }
+
+            using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(cleanupTimeout.Token).ConfigureAwait(false);
+            throw new TimeoutException("vela-lsp did not finish within 30 seconds.");
+        }
+
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
 
         Assert.True(process.ExitCode == 0, $"vela-lsp failed with exit code {process.ExitCode}: {stderr}");
         return stdout.Trim();

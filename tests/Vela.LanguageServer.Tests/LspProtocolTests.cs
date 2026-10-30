@@ -141,6 +141,27 @@ public sealed class LspProtocolTests
     }
 
     [Fact]
+    public async Task MultipleFullChangesUseTheFinalDocument()
+    {
+        var responses = await RunSessionAsync(
+            Open(Uri, Document),
+            Notification("textDocument/didChange", new JsonObject
+            {
+                ["textDocument"] = new JsonObject { ["uri"] = Uri, ["version"] = 2 },
+                ["contentChanges"] = new JsonArray
+                {
+                    new JsonObject { ["text"] = "let intermediate = 1;" },
+                    new JsonObject { ["text"] = "let finalValue = 2;" },
+                },
+            }),
+            Request(8, "textDocument/documentSymbol", DocRef(Uri)));
+
+        var symbols = ById(responses, 8)["result"]!.AsArray();
+        Assert.Single(symbols);
+        Assert.Equal("finalValue", symbols[0]!["name"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task UnknownMethodReturnsMethodNotFound()
     {
         var responses = await RunSessionAsync(Request(99, "nothing/here", new JsonObject()));

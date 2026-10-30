@@ -45,7 +45,7 @@ public sealed class TufRestoreTests
         await File.WriteAllTextAsync(Path.Combine(tufDirectory, "root.json"), rootJson);
         await File.WriteAllTextAsync(Path.Combine(tufDirectory, "targets.json"), targetsJson);
 
-        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot));
+        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot), options: new VelaRestoreOptions { TrustedRootPath = Path.Combine(tufDirectory, "root.json") });
         var restored = await client.RestoreAsync("dogfood.lib", "0.1.0", new Uri(registryRoot).AbsoluteUri);
 
         Assert.Equal("dogfood.lib", restored.Name);
@@ -76,7 +76,7 @@ public sealed class TufRestoreTests
         await File.WriteAllTextAsync(Path.Combine(tufDirectory, "root.json"), rootJson);
         await File.WriteAllTextAsync(Path.Combine(tufDirectory, "targets.json"), targetsJson);
 
-        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot));
+        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot), options: new VelaRestoreOptions { TrustedRootPath = Path.Combine(tufDirectory, "root.json") });
         var error = await Assert.ThrowsAsync<VelaRegistryRestoreException>(
             () => client.RestoreAsync("dogfood.lib", "0.1.0", new Uri(registryRoot).AbsoluteUri));
         Assert.Contains("SHA-256", error.Message, StringComparison.OrdinalIgnoreCase);

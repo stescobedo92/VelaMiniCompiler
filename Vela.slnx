@@ -15,9 +15,11 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Vela.Backend.Tests/Vela.Backend.Tests.csproj" />
+    <Project Path="tests/Vela.Cli.Tests/Vela.Cli.Tests.csproj" />
     <Project Path="tests/Vela.Core.Tests/Vela.Core.Tests.csproj" />
     <Project Path="tests/Vela.Packages.Tests/Vela.Packages.Tests.csproj" />
     <Project Path="tests/Vela.Postgres.Runtime.Tests/Vela.Postgres.Runtime.Tests.csproj" />
+    <Project Path="tests/Vela.Registry.Server.Tests/Vela.Registry.Server.Tests.csproj" />
     <Project Path="tests/Vela.Runtime.Tests/Vela.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Sqlite.Runtime.Tests/Vela.Sqlite.Runtime.Tests.csproj" />
     <Project Path="tests/Vela.Ui.Runtime.Tests/Vela.Ui.Runtime.Tests.csproj" />

@@ -1,10 +1,33 @@
 using Vela.Sqlite;
+using Vela.Runtime;
 using Xunit;
 
 namespace Vela.Sqlite.Runtime.Tests;
 
 public sealed class SqliteDatabaseTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ClosedDatabase_RejectsOperationsWithVelaError(bool dispose)
+    {
+        using var database = VelaSqlite.Open(":memory:");
+        if (dispose)
+        {
+            database.Dispose();
+        }
+        else
+        {
+            VelaSqlite.Close(database);
+        }
+
+        Assert.Throws<VelaIoException>(() => VelaSqlite.Query(database, "SELECT 1;"));
+        Assert.Throws<VelaIoException>(() => VelaSqlite.Execute(database, "SELECT 1;"));
+        Assert.Throws<VelaIoException>(() => VelaSqlite.Migrate(database, Path.GetTempPath()));
+        VelaSqlite.Close(database);
+        database.Dispose();
+    }
+
     [Fact]
     public void OpenExecuteQueryMigrate_Roundtrip()
     {

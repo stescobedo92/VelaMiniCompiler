@@ -30,7 +30,7 @@ public sealed class RegistryClientTests
         Directory.CreateDirectory(versionDirectory);
         File.Copy(archivePath, Path.Combine(versionDirectory, "package.vlpkg"));
 
-        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot));
+        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot), options: new VelaRestoreOptions { AllowUnsigned = true });
         var restored = await client.RestoreAsync("acme.demo", "1.2.0", new Uri(registryRoot).AbsoluteUri);
 
         Assert.Equal("acme.demo", restored.Name);
@@ -61,7 +61,7 @@ public sealed class RegistryClientTests
             """);
         await File.WriteAllTextAsync(Path.Combine(versionDirectory, "src", "lib.vela"), "pub fn ok() -> bool { true }");
 
-        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot));
+        using var client = new VelaRestoreClient(new VelaPackageCache(cacheRoot), options: new VelaRestoreOptions { AllowUnsigned = true });
         var restored = await client.RestoreAsync("acme.local", ">=2.0.0", new Uri(registryRoot).AbsoluteUri);
 
         Assert.Equal("2.0.0", restored.Version);

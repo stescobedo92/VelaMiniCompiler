@@ -26,3 +26,26 @@ Shipped std packages:
 
 Hosted REST/GraphQL/gRPC use **core modules** (`vela.core.http`, …), not the
 plaintext client package.
+
+## Restore packages securely
+
+Version 0.4.0 requires trusted metadata for registry restores by default:
+
+```sh
+vela package restore example.lib --version '^1.0.0' --source https://registry.example/ --trusted-root ./trusted-root.json
+```
+
+The initial root must come from an independently authenticated channel. It is
+persisted per registry, along with verified version history. The client verifies
+key rotation and cached archives; it rejects unexpected rollback and corrupt
+packages. Development registries without signatures require the explicit
+`--allow-unsigned` option, which cannot disable established trust.
+
+The minimal self-hosted registry requires a configured publisher API key and
+HTTPS for publication. Existing versions are immutable. Its `.vlpkg` protocol
+is separate from the gallery's `.vpkg` publish workflow.
+
+See the [CLI reference](/reference/cli) for options and the
+[registry configuration guide](https://github.com/stescobedo92/VelaMiniCompiler/blob/master/docs/registry-security.md)
+for hosting settings. The signed protocol implements root and targets roles;
+it does not claim full TUF snapshot, timestamp, or delegation support.

@@ -1,4 +1,5 @@
 using Vela.Postgres;
+using Vela.Runtime;
 using Xunit;
 
 namespace Vela.Postgres.Runtime.Tests;
@@ -69,5 +70,12 @@ public sealed class PostgresDatabaseTests
         {
             Directory.Delete(migrationsDirectory, recursive: true);
         }
+
+        VelaPostgres.Close(database);
+        Assert.Throws<VelaIoException>(() => VelaPostgres.Query(database, "SELECT 1;"));
+        Assert.Throws<VelaIoException>(() => VelaPostgres.Execute(database, "SELECT 1;"));
+        Assert.Throws<VelaIoException>(() => VelaPostgres.Migrate(database, Path.GetTempPath()));
+        database.Dispose();
+        VelaPostgres.Close(database);
     }
 }

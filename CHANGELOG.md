@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+## 0.4.0 — 2026-10-29
+
+### Security
+- Registry publication now requires a configured API key and HTTPS, validates
+  package identities and bounded archives, and publishes versions atomically
+  without overwriting existing content.
+- Restore requires an explicitly provisioned trusted TUF root by default.
+  `--trusted-root` bootstraps registry trust; `--allow-unsigned` is an explicit
+  development opt-out and cannot downgrade an already trusted registry.
+- Verify consecutive, dual-signed root rotations, persist rollback state, and
+  verify cached package bytes before re-extracting them for reuse.
+- Isolate caches by registry source and reject unavailable, partial, malformed,
+  or expired signed metadata instead of silently accepting unsigned content.
+- Validate LSP frames, JSON-RPC messages, Unicode, and message-size limits.
+
+### Fixed
+- Uninitialized reference-bearing array slots now raise catchable Vela errors;
+  numeric defaults, optional `None`, and `Any` null values remain supported.
+- Optional/null, struct, and result equality now generate valid C#, with single
+  operand evaluation; unused catch bindings no longer break generated builds.
+- JSON integer lookups safely reject other types, closed database operations
+  report Vela errors, and handle cleanup preserves lifecycle invariants.
+- Invalid task handles cannot cancel another task occupying the same slot.
+- GraphQL arguments preserve quoted commas and escapes, and responses remain
+  valid JSON; unsupported documents are rejected before invoking resolvers.
+- HTTP package ranges select the highest compatible version, matching file
+  registry semantics.
+- Formatter idempotence tests cover both LF and CRLF checkouts on every platform.
+
+### Migration
+- Existing unsigned registries require `vela package restore ... --allow-unsigned`.
+  Obtain trusted root metadata through an authenticated, independent channel
+  before restoring signed packages with `--trusted-root`.
+- Configure `Registry__ApiKey` for publishing to the minimal registry. Plain HTTP
+  publishing requires explicit development configuration; existing versions are
+  immutable and return HTTP 409 on duplicate publication.
+- The signed registry protocol remains a restricted root/targets design, not a
+  full TUF implementation with snapshot/timestamp roles and delegated targets.
+
 ## 0.3.1 — 2026-07-19
 
 ### Added

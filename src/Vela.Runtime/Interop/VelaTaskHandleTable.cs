@@ -3,7 +3,6 @@ namespace Vela.Runtime.Interop;
 /// <summary>Owns asynchronous ABI task handles with cooperative cancellation.</summary>
 public sealed class VelaTaskHandleTable : IDisposable
 {
-    private readonly ulong _ownerId;
     private readonly object _gate = new();
     private readonly VelaHandleTable _handles;
     private readonly Dictionary<uint, TaskEntry> _tasks = new();
@@ -13,7 +12,6 @@ public sealed class VelaTaskHandleTable : IDisposable
     /// <param name="ownerId">The owner identifier stamped on issued handles.</param>
     public VelaTaskHandleTable(ulong ownerId)
     {
-        _ownerId = ownerId;
         _handles = new VelaHandleTable(ownerId);
     }
 
@@ -22,40 +20,22 @@ public sealed class VelaTaskHandleTable : IDisposable
     /// <returns>A handle referencing the running task.</returns>
     public VelaHandle Create(Func<CancellationToken, Task> work)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(work);
-
-        var cancellationSource = new CancellationTokenSource();
-        var entry = new TaskEntry(cancellationSource);
-        var handle = _handles.Create(entry, VelaTypeContract.Task);
 
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var cancellationSource = new CancellationTokenSource();
+            var cancellationToken = cancellationSource.Token;
+            var entry = new TaskEntry(cancellationSource);
+            var handle = _handles.Create(entry, VelaTypeContract.Task);
             _tasks[handle.Slot] = entry;
+
+            // Publish the task under the lifecycle lock before Release or Dispose can see it.
+            // CancellationToken.None ensures an early release still lets work observe cancellation.
+            entry.Task = Task.Run(() => work(cancellationToken), CancellationToken.None);
+            return handle;
         }
-
-        // Schedule with CancellationToken.None so an early Release still enters `work`
-        // and can observe the linked token (Task.Run would otherwise skip the delegate).
-        entry.Task = Task.Run(async () =>
-        {
-            try
-            {
-                await work(cancellationSource.Token).ConfigureAwait(false);
-                entry.MarkCompleted();
-            }
-            catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
-            {
-                entry.MarkCancelled();
-                throw;
-            }
-            catch (Exception exception)
-            {
-                entry.MarkFaulted(exception);
-                throw;
-            }
-        }, CancellationToken.None);
-
-        return handle;
     }
 
     /// <summary>Releases a task handle, cancelling the work when it has not completed.</summary>
@@ -63,96 +43,108 @@ public sealed class VelaTaskHandleTable : IDisposable
     /// <returns>The release status.</returns>
     public VelaAbiResult Release(VelaHandle handle)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        if (handle.TypeContract != VelaTypeContract.Task)
-        {
-            return VelaAbiResult.Fail(VelaAbiStatus.WrongType);
-        }
-
-        TaskEntry? entry;
+        TaskEntry entry;
         lock (_gate)
         {
-            _tasks.TryGetValue(handle.Slot, out entry);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (handle.TypeContract != VelaTypeContract.Task)
+            {
+                return VelaAbiResult.Fail(VelaAbiStatus.WrongType);
+            }
+
+            var resolved = _handles.Resolve<TaskEntry>(handle, VelaTypeContract.Task);
+            if (resolved.Status != VelaAbiStatus.Success)
+            {
+                return VelaAbiResult.Fail(resolved.Status);
+            }
+
+            var result = _handles.Release(handle);
+            if (!result.IsSuccess)
+            {
+                return result;
+            }
+
+            entry = resolved.Value!;
+            _tasks.Remove(handle.Slot);
         }
 
-        if (entry is not null && !entry.IsCompleted)
+        // User cancellation callbacks run only after the validated handle has been removed.
+        try
         {
-            entry.CancellationSource.Cancel();
+            CancelAndDisposeAfterCompletion(entry);
+            return VelaAbiResult.Ok();
         }
-
-        var result = _handles.Release(handle);
-        if (result.IsSuccess)
+        catch (AggregateException)
         {
-            lock (_gate)
-            {
-                _tasks.Remove(handle.Slot);
-            }
-
-            // Keep the CTS alive until the worker observes cancellation; table Dispose cleans leftovers.
-            if (entry is null)
-            {
-                // No tracked entry.
-            }
-            else if (entry.Task is { IsCompleted: true })
-            {
-                entry.CancellationSource.Dispose();
-            }
-            else if (entry.Task is not null)
-            {
-                entry.Task.ContinueWith(
-                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
-                    entry.CancellationSource,
-                    CancellationToken.None,
-                    TaskContinuationOptions.ExecuteSynchronously,
-                    TaskScheduler.Default);
-            }
+            return VelaAbiResult.Fail(VelaAbiStatus.InternalError);
         }
-
-        return result;
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
         List<TaskEntry> entries;
         lock (_gate)
         {
+            if (_disposed)
+            {
+                return;
+            }
+
             entries = _tasks.Values.ToList();
             _tasks.Clear();
             _disposed = true;
+            _handles.Dispose();
         }
 
+        List<Exception>? failures = null;
         foreach (var entry in entries)
         {
-            if (!entry.IsCompleted)
+            try
+            {
+                CancelAndDisposeAfterCompletion(entry);
+            }
+            catch (AggregateException exception)
+            {
+                (failures ??= []).Add(exception);
+            }
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException("One or more task cancellation callbacks failed.", failures);
+        }
+    }
+
+    private static void CancelAndDisposeAfterCompletion(TaskEntry entry)
+    {
+        try
+        {
+            if (!entry.Task.IsCompleted)
             {
                 entry.CancellationSource.Cancel();
             }
-
-            entry.CancellationSource.Dispose();
         }
-
-        _handles.Dispose();
+        finally
+        {
+            // Work may still use its token after cancellation; retain the source until it exits.
+            _ = entry.Task.ContinueWith(
+                static (task, state) =>
+                {
+                    _ = task.Exception;
+                    ((CancellationTokenSource)state!).Dispose();
+                },
+                entry.CancellationSource,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
     }
 
     private sealed class TaskEntry(CancellationTokenSource cancellationSource)
     {
         public CancellationTokenSource CancellationSource { get; } = cancellationSource;
 
-        public Task? Task { get; set; }
-
-        public bool IsCompleted { get; private set; }
-
-        public void MarkCompleted() => IsCompleted = true;
-
-        public void MarkCancelled() => IsCompleted = true;
-
-        public void MarkFaulted(Exception _) => IsCompleted = true;
+        public Task Task { get; set; } = Task.CompletedTask;
     }
 }

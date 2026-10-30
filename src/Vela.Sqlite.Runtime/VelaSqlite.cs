@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Microsoft.Data.Sqlite;
+using Vela.Runtime;
 
 namespace Vela.Sqlite;
 
@@ -8,7 +9,6 @@ namespace Vela.Sqlite;
 public sealed class VelaSqliteDatabase : IDisposable
 {
     private SqliteConnection? _connection;
-    private bool _disposed;
 
     private VelaSqliteDatabase(SqliteConnection connection) => _connection = connection;
 
@@ -25,9 +25,9 @@ public sealed class VelaSqliteDatabase : IDisposable
     /// <summary>Executes non-query SQL and returns the number of rows affected.</summary>
     public int Execute(string sql)
     {
-        ThrowIfDisposed();
+        var connection = GetOpenConnection();
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
-        using var command = _connection!.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = sql;
         return command.ExecuteNonQuery();
     }
@@ -35,9 +35,9 @@ public sealed class VelaSqliteDatabase : IDisposable
     /// <summary>Executes a query and returns rows as a JSON array of objects.</summary>
     public string Query(string sql)
     {
-        ThrowIfDisposed();
+        var connection = GetOpenConnection();
         ArgumentException.ThrowIfNullOrWhiteSpace(sql);
-        using var command = _connection!.CreateCommand();
+        using var command = connection.CreateCommand();
         command.CommandText = sql;
         using var reader = command.ExecuteReader();
         return VelaDbJson.FormatRows(reader);
@@ -46,37 +46,19 @@ public sealed class VelaSqliteDatabase : IDisposable
     /// <summary>Applies <c>*.sql</c> files from <paramref name="migrationsDirectory"/> in sorted file-name order.</summary>
     public void Migrate(string migrationsDirectory)
     {
-        ThrowIfDisposed();
+        var connection = GetOpenConnection();
         ArgumentException.ThrowIfNullOrWhiteSpace(migrationsDirectory);
-        VelaDbMigrations.Apply(_connection!, migrationsDirectory);
+        VelaDbMigrations.Apply(connection, migrationsDirectory);
     }
 
     /// <summary>Closes the database connection.</summary>
-    public void Close()
-    {
-        if (_connection is null)
-        {
-            return;
-        }
-
-        _connection.Close();
-        _connection.Dispose();
-        _connection = null;
-    }
+    public void Close() => Interlocked.Exchange(ref _connection, null)?.Dispose();
 
     /// <inheritdoc />
-    public void Dispose()
-    {
-        if (_disposed)
-        {
-            return;
-        }
+    public void Dispose() => Close();
 
-        _disposed = true;
-        Close();
-    }
-
-    private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private SqliteConnection GetOpenConnection() => _connection
+        ?? throw new VelaIoException("SQLite database is closed.");
 }
 
 /// <summary>Static helpers emitted by the Vela SQLite core module.</summary>

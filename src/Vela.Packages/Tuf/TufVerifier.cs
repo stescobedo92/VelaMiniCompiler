@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,43 +6,125 @@ using System.Text.Json;
 namespace Vela.Packages.Tuf;
 
 /// <summary>Verifies simplified single-role TUF root and targets metadata.</summary>
+/// <remarks>
+/// Low-level verification assumes the supplied root is trusted. VelaRestoreClient
+/// provisions that trust out of band and persists root rotation and rollback state.
+/// This remains a root/targets subset; timestamp, snapshot and delegation roles are not implemented.
+/// </remarks>
 public static class TufVerifier
 {
     private const string ExpectedKeyType = "ecdsa-sha2-nistp256";
+    private static readonly string[] ExpiryFormats = ["yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'"];
 
     /// <summary>Validates <paramref name="targetsJson"/> against <paramref name="rootJson"/> and returns the target map.</summary>
     public static IReadOnlyDictionary<string, TufTargetFile> VerifyTargets(string rootJson, string targetsJson)
+        => VerifyTargetsMetadata(rootJson, targetsJson, DateTimeOffset.UtcNow).SignedPayload.Targets;
+
+    internal static TufTargetsMetadata VerifyTargetsMetadata(string rootJson, string targetsJson, DateTimeOffset updateTime)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(rootJson);
-        ArgumentException.ThrowIfNullOrWhiteSpace(targetsJson);
+        if (string.IsNullOrWhiteSpace(rootJson) || string.IsNullOrWhiteSpace(targetsJson))
+        {
+            throw new TufVerificationException("Root and targets metadata must not be empty.");
+        }
 
         var rootBytes = Encoding.UTF8.GetBytes(rootJson);
         var targetsBytes = Encoding.UTF8.GetBytes(targetsJson);
-        var root = JsonSerializer.Deserialize(rootBytes, TufJsonContext.Default.TufRootMetadata)
-            ?? throw new TufVerificationException("Root metadata is empty.");
-        var targets = JsonSerializer.Deserialize(targetsBytes, TufJsonContext.Default.TufTargetsMetadata)
-            ?? throw new TufVerificationException("Targets metadata is empty.");
+        TufRootMetadata root;
+        TufTargetsMetadata targets;
+        try
+        {
+            ValidateJson(rootBytes);
+            ValidateJson(targetsBytes);
+            root = JsonSerializer.Deserialize(rootBytes, TufJsonContext.Default.TufRootMetadata)
+                ?? throw new TufVerificationException("Root metadata is empty.");
+            targets = JsonSerializer.Deserialize(targetsBytes, TufJsonContext.Default.TufTargetsMetadata)
+                ?? throw new TufVerificationException("Targets metadata is empty.");
+        }
+        catch (JsonException ex)
+        {
+            throw new TufVerificationException("TUF metadata contains invalid JSON or missing or null required members.", ex);
+        }
+
+        ValidateRootCollections(root);
+        ValidateVersion(root.SignedPayload.Version);
+        ValidateVersion(targets.SignedPayload.Version);
+        ValidateSignatures(targets.Signatures);
+        foreach (var target in targets.SignedPayload.Targets.Values)
+        {
+            ValidateTarget(target);
+        }
 
         ValidateSignedEnvelope(
             root.Signatures,
             rootBytes,
             "root",
             root.SignedPayload.Roles,
-            root.SignedPayload.Keys);
+            root.SignedPayload.Keys,
+            updateTime: updateTime);
         ValidateSignedEnvelope(
             targets.Signatures,
             targetsBytes,
             "targets",
             root.SignedPayload.Roles,
             root.SignedPayload.Keys,
-            roleName: "targets");
+            roleName: "targets",
+            updateTime: updateTime);
 
         if (targets.SignedPayload.Targets.Count == 0)
         {
             throw new TufVerificationException("Targets metadata does not contain any targets.");
         }
 
-        return targets.SignedPayload.Targets;
+        return targets;
+    }
+
+    internal static TufRootMetadata VerifyRoot(string rootJson, DateTimeOffset updateTime, bool allowExpired = false)
+    {
+        try
+        {
+            var bytes = Encoding.UTF8.GetBytes(rootJson);
+            ValidateJson(bytes);
+            var root = JsonSerializer.Deserialize(bytes, TufJsonContext.Default.TufRootMetadata)
+                ?? throw new TufVerificationException("Root metadata is empty.");
+            ValidateRootCollections(root);
+            ValidateVersion(root.SignedPayload.Version);
+            ValidateSignedEnvelope(root.Signatures, bytes, "root", root.SignedPayload.Roles,
+                root.SignedPayload.Keys, allowExpired: allowExpired, updateTime: updateTime);
+            return root;
+        }
+        catch (JsonException ex)
+        {
+            throw new TufVerificationException("TUF root contains invalid JSON or missing or null required members.", ex);
+        }
+    }
+
+    internal static void VerifyRootRotation(string trustedRootJson, string nextRootJson, DateTimeOffset updateTime)
+    {
+        var oldRoot = VerifyRoot(trustedRootJson, updateTime, allowExpired: true);
+        var nextRoot = VerifyRoot(nextRootJson, updateTime, allowExpired: true);
+        if ((long)nextRoot.SignedPayload.Version != (long)oldRoot.SignedPayload.Version + 1)
+        {
+            throw new TufVerificationException("TUF root rotation must increment the version by exactly one.");
+        }
+
+        ValidateSignedEnvelope(nextRoot.Signatures, Encoding.UTF8.GetBytes(nextRootJson), "root",
+            oldRoot.SignedPayload.Roles, oldRoot.SignedPayload.Keys, allowExpired: true, updateTime: updateTime);
+    }
+
+    internal static string SignedDigest(string metadataJson) =>
+        Convert.ToHexString(SHA256.HashData(TufCanonicalJson.EncodeSignedPortion(Encoding.UTF8.GetBytes(metadataJson))));
+
+    private static void ValidateVersion(int version)
+    {
+        if (version < 1)
+        {
+            throw new TufVerificationException("TUF metadata version must be positive.");
+        }
+    }
+
+    private static void ValidateJson(byte[] bytes)
+    {
+        using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { AllowDuplicateProperties = false });
     }
 
     /// <summary>Computes the lowercase hex SHA-256 digest of a file.</summary>
@@ -61,6 +144,7 @@ public static class TufVerifier
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(archivePath);
         ArgumentNullException.ThrowIfNull(target);
+        ValidateTarget(target);
 
         if (!File.Exists(archivePath))
         {
@@ -81,13 +165,56 @@ public static class TufVerifier
         }
     }
 
+    private static void ValidateRootCollections(TufRootMetadata root)
+    {
+        ValidateSignatures(root.Signatures);
+        foreach (var key in root.SignedPayload.Keys.Values)
+        {
+            if (key is null)
+            {
+                throw new TufVerificationException("Root metadata contains a null key.");
+            }
+        }
+
+        foreach (var role in root.SignedPayload.Roles.Values)
+        {
+            if (role is null || role.KeyIds.Any(static keyId => keyId is null))
+            {
+                throw new TufVerificationException("Root metadata contains a null role or key id.");
+            }
+        }
+    }
+
+    private static void ValidateSignatures(IReadOnlyList<TufSignature> signatures)
+    {
+        if (signatures.Any(static signature => signature is null))
+        {
+            throw new TufVerificationException("TUF metadata contains a null signature.");
+        }
+    }
+
+    private static void ValidateTarget(TufTargetFile? target)
+    {
+        if (target is null || target.Hashes is null || string.IsNullOrWhiteSpace(target.Hashes.Sha256))
+        {
+            throw new TufVerificationException("TUF target metadata is missing the target or its SHA-256 hash.");
+        }
+
+        if (target.Length < 0)
+        {
+            throw new TufVerificationException("TUF target metadata has a negative archive length.");
+        }
+    }
+
     private static void ValidateSignedEnvelope(
         IReadOnlyList<TufSignature> signatures,
         ReadOnlySpan<byte> metadataJson,
         string expectedType,
         IReadOnlyDictionary<string, TufRoleDefinition> roles,
         IReadOnlyDictionary<string, TufPublicKey> keys,
-        string? roleName = null)
+        string? roleName = null,
+        bool allowExpired = false,
+        DateTimeOffset? updateTime = null)
     {
         using var document = JsonDocument.Parse(metadataJson.ToArray());
         if (!document.RootElement.TryGetProperty("signed", out var signed))
@@ -105,12 +232,13 @@ public static class TufVerifier
 
         if (!signed.TryGetProperty("expires", out var expiresElement)
             || expiresElement.ValueKind != JsonValueKind.String
-            || !DateTimeOffset.TryParse(expiresElement.GetString(), out var expires))
+            || !DateTimeOffset.TryParseExact(expiresElement.GetString(), ExpiryFormats, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var expires))
         {
             throw new TufVerificationException("TUF metadata expiry is invalid.");
         }
 
-        if (expires <= DateTimeOffset.UtcNow)
+        if (!allowExpired && expires <= (updateTime ?? DateTimeOffset.UtcNow))
         {
             throw new TufVerificationException("TUF metadata has expired.");
         }

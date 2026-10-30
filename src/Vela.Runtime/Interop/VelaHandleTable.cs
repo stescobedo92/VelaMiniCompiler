@@ -22,11 +22,11 @@ public sealed class VelaHandleTable : IDisposable
     /// <returns>A handle referencing the stored value.</returns>
     public VelaHandle Create(object value, ulong typeContract)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(value);
 
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var slotIndex = RentSlotIndex();
             ref var slot = ref _slots[slotIndex];
             slot.Value = value;
@@ -45,10 +45,9 @@ public sealed class VelaHandleTable : IDisposable
     /// <returns>The resolution status and value when successful.</returns>
     public (VelaAbiStatus Status, T? Value) Resolve<T>(VelaHandle handle, ulong expectedType)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!TryGetActiveSlot(handle, out var slot, out var status))
             {
                 return (status, default);
@@ -73,10 +72,9 @@ public sealed class VelaHandleTable : IDisposable
     /// <returns>The retain status.</returns>
     public VelaAbiResult Retain(VelaHandle handle)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!TryGetActiveSlotIndex(handle, out var slotIndex, out var status))
             {
                 return VelaAbiResult.Fail(status);
@@ -90,13 +88,13 @@ public sealed class VelaHandleTable : IDisposable
 
     /// <summary>Releases one reference to a handle, recycling the slot when the count reaches zero.</summary>
     /// <param name="handle">The handle to release.</param>
-    /// <returns>The release status.</returns>
+    /// <returns>The release status, including <see cref="VelaAbiStatus.InternalError"/> if cleanup fails after the handle is invalidated.</returns>
     public VelaAbiResult Release(VelaHandle handle)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
+        object? value;
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!TryGetActiveSlotIndex(handle, out var slotIndex, out var status))
             {
                 return VelaAbiResult.Fail(status);
@@ -109,41 +107,71 @@ public sealed class VelaHandleTable : IDisposable
                 return VelaAbiResult.Ok();
             }
 
-            DisposeStoredValue(slot.Value);
+            value = slot.Value;
             slot.Value = null;
             slot.TypeContract = 0;
             slot.IsActive = false;
-            slot.Generation = checked(slot.Generation + 1);
-            _freeList.Push(handle.Slot);
+            // Retire exhausted generations instead of making a stale handle valid again.
+            if (slot.Generation < uint.MaxValue)
+            {
+                slot.Generation++;
+                _freeList.Push(handle.Slot);
+            }
+        }
+
+        try
+        {
+            DisposeStoredValue(value);
             return VelaAbiResult.Ok();
+        }
+        catch (Exception)
+        {
+            return VelaAbiResult.Fail(VelaAbiStatus.InternalError);
         }
     }
 
     /// <inheritdoc />
+    /// <exception cref="AggregateException">One or more stored values failed to dispose. All handles have still been invalidated.</exception>
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
+        List<object> values;
         lock (_gate)
         {
-            for (var index = 0; index < _slots.Length; index++)
+            if (_disposed)
             {
-                ref var slot = ref _slots[index];
-                if (!slot.IsActive)
-                {
-                    continue;
-                }
-
-                DisposeStoredValue(slot.Value);
-                slot.Value = null;
-                slot.IsActive = false;
+                return;
             }
 
+            values = [];
+            foreach (var slot in _slots)
+            {
+                if (slot.IsActive && slot.Value is not null)
+                {
+                    values.Add(slot.Value);
+                }
+            }
+
+            _slots = [];
             _freeList.Clear();
             _disposed = true;
+        }
+
+        List<Exception>? failures = null;
+        foreach (var value in values)
+        {
+            try
+            {
+                DisposeStoredValue(value);
+            }
+            catch (Exception exception)
+            {
+                (failures ??= []).Add(exception);
+            }
+        }
+
+        if (failures is not null)
+        {
+            throw new AggregateException("One or more handle values failed to dispose.", failures);
         }
     }
 
@@ -192,6 +220,13 @@ public sealed class VelaHandleTable : IDisposable
         {
             slotIndex = 0;
             status = VelaAbiStatus.StaleHandle;
+            return false;
+        }
+
+        if (slot.TypeContract != handle.TypeContract)
+        {
+            slotIndex = 0;
+            status = VelaAbiStatus.WrongType;
             return false;
         }
 

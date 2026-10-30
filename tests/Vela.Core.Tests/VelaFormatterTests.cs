@@ -92,8 +92,10 @@ public sealed class VelaFormatterTests
         Assert.Equal(result.Text, VelaFormatter.Format(new SourceText(result.Text, "generics.vela")).Text);
     }
 
-    [Fact]
-    public void FormatIsIdempotentOnRealisticSource()
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void FormatIsIdempotentOnRealisticSource(string newline)
     {
         const string code = """
             include vela.core;
@@ -125,10 +127,10 @@ public sealed class VelaFormatterTests
             }
             """;
 
-        var once = VelaFormatter.Format(new SourceText(code + "\n", "program.vela"));
+        var once = VelaFormatter.Format(new SourceText(code.ReplaceLineEndings(newline) + newline, "program.vela"));
 
         Assert.False(once.HasErrors);
-        Assert.Equal(code + "\n", once.Text);
+        Assert.Equal(code.ReplaceLineEndings("\n") + "\n", once.Text);
         Assert.Equal(once.Text, VelaFormatter.Format(new SourceText(once.Text, "program.vela")).Text);
     }
 

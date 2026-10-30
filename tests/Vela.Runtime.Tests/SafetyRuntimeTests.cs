@@ -47,6 +47,43 @@ public sealed class SafetyRuntimeTests
     }
 
     [Fact]
+    public void Array_RejectsUninitializedReferencesAcrossReadApis()
+    {
+        var values = new VelaArray<string>(1);
+        var error = Assert.Throws<VelaNullReferenceException>(() => values.Get(0, "array:3:2"));
+        Assert.Equal("array:3:2", error.SourceLocation);
+        Assert.Throws<VelaNullReferenceException>(() => values[0]);
+        Assert.Throws<VelaNullReferenceException>(() => values.ToArray());
+        Assert.Throws<VelaNullReferenceException>(() => values.ToList());
+
+        values.Set(0, "ready", "array:4:2");
+        Assert.Equal("ready", values.Get(0, "array:5:2"));
+        Assert.Equal(["ready"], values.ToArray());
+    }
+
+    [Fact]
+    public void Array_RequiresInitializationOfStructsContainingReferences()
+    {
+        var values = new VelaArray<(int Number, string Text)>(1);
+        Assert.Throws<VelaNullReferenceException>(() => values.Get(0, "array:1:1"));
+        values[0] = (7, "ready");
+        Assert.Equal((7, "ready"), values.Get(0, "array:2:1"));
+    }
+
+    [Fact]
+    public void Array_PreservesSafeDefaultsAndCopiedValues()
+    {
+        Assert.Equal(0, new VelaArray<int>(1).Get(0, "array:1:1"));
+        Assert.True(new VelaArray<Option<string>>(1).Get(0, "array:1:1").IsNone);
+        var boxed = new VelaArray<object>(1);
+        Assert.Null(boxed.Get(0, "array:1:1"));
+        boxed.Set(0, null!, "array:1:1");
+        Assert.Null(boxed.Get(0, "array:1:1"));
+        Assert.Equal((7, "ready"), new VelaArray<(int, string)>([(7, "ready")]).Get(0, "array:1:1"));
+        Assert.Throws<VelaNullReferenceException>(() => new VelaArray<string>([null!]).Get(0, "array:1:1"));
+    }
+
+    [Fact]
     public void NativeAbiValues_RoundTripTextAndDecimal()
     {
         var text = VelaText.FromString("¡Vela!");

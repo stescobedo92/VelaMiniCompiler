@@ -1379,6 +1379,104 @@ public sealed class VelaBackendTests
         }
     }
 
+    [Fact]
+    public async Task CompileUninitializedArraysRaisesCatchableVelaErrors()
+    {
+        var compilation = Compile("""
+            include vela.core;
+            class Item() { value: Int = 7; }
+            struct Holder { item: Item; }
+            fn main() -> Int {
+                let items = Array<Item>(1);
+                try { print(items[0].value); }
+                catch VelaNullReferenceException unused { print("class-caught"); }
+                let nested = Array<Array<Int>>(1);
+                try { print(nested[0].length); }
+                catch VelaRuntimeException unused { print("nested-caught"); }
+                let holders = Array<Holder>(1);
+                try { print(holders[0].item.value); }
+                catch VelaRuntimeException unused { print("struct-caught"); }
+                let boxes = Array<Any>(1);
+                assert boxes[0] == nil;
+                boxes[0] = nil;
+                assert boxes[0] == nil;
+                return 0;
+            }
+            """, "array-null-safety.vela");
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static d => d.Message)));
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation, new BuildOptions("ArraySafety", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+            Assert.Contains("class-caught", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("nested-caught", result.StandardOutput, StringComparison.Ordinal);
+            Assert.Contains("struct-caught", result.StandardOutput, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Fact]
+    public async Task CompileOptionalAndStructEqualityRunsWithSingleEvaluation()
+    {
+        var compilation = Compile("""
+            include vela.core;
+            struct Point { x: Int; }
+            class EqualityComparer<T>(value: T) { item: T = value; }
+            fn probe() -> Int? { print("probe"); return none<Int>(); }
+            fn main() -> Int {
+                let empty: Int? = null;
+                let present = some<Int>(7);
+                assert empty == nil;
+                assert nil == empty;
+                assert present != null;
+                assert null != present;
+                assert empty == none<Int>();
+                assert present == some<Int>(7);
+                assert present != empty;
+                assert probe() == nil;
+                assert Point(3) == Point(3);
+                assert Point(3) != Point(4);
+                assert ok<Int, Text>(7) == ok<Int, Text>(7);
+                assert EqualityComparer<Int>(1) != EqualityComparer<Int>(1);
+                let first: Any = 42;
+                let second: Any = 42;
+                let same: Any = first;
+                assert first != second;
+                assert first == same;
+                return 0;
+            }
+            """, "optional-equality.vela");
+        Assert.False(compilation.HasErrors, string.Join(Environment.NewLine, compilation.Diagnostics.Select(static d => d.Message)));
+        var outputDirectory = CreateTemporaryDirectory();
+        try
+        {
+            var project = new VelaBuildService(GetRuntimeProjectPath()).WriteSourceProject(
+                compilation, new BuildOptions("OptionalEquality", outputDirectory, Mode: ExecutableMode.FrameworkDependent));
+            var result = await VelaBuildService.RunGeneratedProjectAsync(project);
+            Assert.True(result.ExitCode == 0, result.StandardOutput + result.StandardError);
+            Assert.Equal("probe", result.StandardOutput.Trim());
+        }
+        finally
+        {
+            DeleteTemporaryDirectory(outputDirectory);
+        }
+    }
+
+    [Theory]
+    [InlineData("1 == nil")]
+    [InlineData("nil != true")]
+    public void CompileRejectsNullComparisonWithNonOptionalValues(string expression)
+    {
+        var compilation = Compile($"fn main() -> Int {{ if {expression} {{ return 1; }} return 0; }}", "invalid-null-comparison.vela");
+        Assert.Contains(compilation.Diagnostics, static diagnostic => diagnostic.Code == "VEL3002");
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var directory = Path.Combine(Path.GetTempPath(), "vela-backend-tests", Guid.NewGuid().ToString("N"));

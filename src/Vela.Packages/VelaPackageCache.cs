@@ -1,6 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace Vela.Packages;
 
-/// <summary>Content-addressed on-disk cache for restored package trees.</summary>
+/// <summary>On-disk cache for restored package trees.</summary>
 public sealed class VelaPackageCache
 {
     /// <summary>Initializes a cache at the default user profile location.</summary>
@@ -18,6 +21,24 @@ public sealed class VelaPackageCache
 
     /// <summary>Gets the cache root directory.</summary>
     public string RootDirectory { get; }
+
+    /// <summary>Gets an isolated cache for an absolute registry URI.</summary>
+    /// <remarks>
+    /// Existing entries without a registry identity are not reused. URI path case and
+    /// trailing slashes are preserved because they can select different HTTP resources.
+    /// </remarks>
+    public VelaPackageCache ForRegistry(Uri registryUri)
+    {
+        ArgumentNullException.ThrowIfNull(registryUri);
+        if (!registryUri.IsAbsoluteUri)
+        {
+            throw new ArgumentException("A registry URI must be absolute.", nameof(registryUri));
+        }
+
+        var sourceHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(registryUri.AbsoluteUri)))
+            .ToLowerInvariant();
+        return new VelaPackageCache(Path.Combine(RootDirectory, "registries", sourceHash));
+    }
 
     /// <summary>Gets the extracted package directory for <paramref name="name"/> at <paramref name="version"/>.</summary>
     public string GetPackagePath(string name, string version) =>
@@ -62,8 +83,17 @@ public sealed class VelaPackageCache
         return File.Exists(Path.Combine(path, "vela.toml"));
     }
 
-    private static string Sanitize(string value) =>
-        value.Replace('/', '_').Replace('\\', '_').Replace(':', '_');
+    private static string Sanitize(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        if (value is "." or ".." || value.EndsWith('.') || value.EndsWith(' ')
+            || value.Any(static character => char.IsControl(character)
+                || character is '/' or '\\' or ':' or '<' or '>' or '"' or '|' or '?' or '*'))
+        {
+            throw new ArgumentException("Cache identities must be safe, single path components.", nameof(value));
+        }
+        return value;
+    }
 
     private static void CopyDirectory(string source, string destination)
     {

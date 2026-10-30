@@ -7,6 +7,22 @@ namespace Vela.Runtime.Tests;
 
 public sealed class CoreModuleTests
 {
+    [Theory]
+    [InlineData("{\"value\":null}")]
+    [InlineData("{\"value\":\"123\"}")]
+    [InlineData("{\"value\":true}")]
+    [InlineData("{\"value\":false}")]
+    [InlineData("{\"value\":[]}")]
+    [InlineData("{\"value\":{}}")]
+    [InlineData("{\"value\":1.5}")]
+    [InlineData("{\"value\":2147483648}")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    public void JsonTryGetInt_ReturnsNoneWhenPropertyIsNotAnInt(string json)
+    {
+        Assert.True(VelaJson.TryGetInt(json, "value", "test:1:1").IsNone);
+    }
+
     [Fact]
     public void JsonCryptoTextMathAndEncoding_AreDeterministicAndValidated()
     {
